@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import * as cornerstone from '@cornerstonejs/core';
 
 interface Preset {
@@ -9,34 +9,34 @@ interface Preset {
 }
 
 const CT_PRESETS: Preset[] = [
-  { name: 'Coronary', window: 700, level: 350, description: 'Coronary arteries (standard)' },
-  { name: 'TAVI', window: 555, level: 208, description: 'Aortic valve planning' },
-  { name: 'CT Angio', window: 600, level: 300, description: 'Vascular contrast' },
-  { name: 'Thorax', window: 800, level: 200, description: 'Thorax overview' },
-  { name: 'CT Abdomen', window: 400, level: 40, description: 'Soft tissue' },
-  { name: 'CT Lung', window: 1500, level: -600, description: 'Lung parenchyma' },
-  { name: 'CT Bone', window: 2000, level: 300, description: 'Bone structures' },
-  { name: '100kV', window: 1800, level: 700, description: '100kV coronary protocol' },
-  { name: 'Cardiac Fat', window: 170, level: -115, description: 'Epicardial fat' },
+  { name: 'Default', window: 700, level: 350, description: 'Coronary arteries (standard)' },
+  { name: 'Lung', window: 1500, level: -600, description: 'Lung parenchyma' },
+  { name: 'Abdomen', window: 400, level: 40, description: 'Soft tissue' },
   { name: 'Mediastinum', window: 350, level: 50, description: 'Mediastinal' },
+  { name: 'Chest', window: 800, level: 200, description: 'Thorax overview' },
+  { name: 'Bone', window: 2000, level: 300, description: 'Bone structures' },
+  { name: 'CT Angio', window: 600, level: 300, description: 'Vascular contrast' },
+  { name: 'TAVI', window: 555, level: 208, description: 'Aortic valve planning' },
+  { name: 'Cardiac Fat', window: 170, level: -115, description: 'Epicardial fat' },
 ];
 
 const MR_PRESETS: Preset[] = [
-  // General MR
-  { name: 'T1', window: 800, level: 400, description: 'T1 weighted — anatomy' },
+  { name: 'Default', window: 800, level: 400, description: 'T1 weighted — anatomy' },
   { name: 'T2', window: 1200, level: 600, description: 'T2 weighted — fluid bright' },
   { name: 'STIR/PD', window: 1500, level: 750, description: 'STIR / Proton Density' },
-  // Hand/Wrist specific
-  { name: 'Tendon', window: 450, level: 225, description: 'Tendons — low-signal structures against fat (T1/PD)' },
-  { name: 'Ligament', window: 350, level: 175, description: 'Ligaments — fine hypointense detail (SL, TFCC)' },
-  { name: 'Cartilage', window: 550, level: 275, description: 'Articular cartilage — intermediate signal' },
-  { name: 'Bone Marrow', window: 700, level: 350, description: 'Bone marrow — edema detection (T2/STIR)' },
-  { name: 'Edema', window: 1800, level: 900, description: 'Fluid/edema — high sensitivity (STIR)' },
-  { name: 'Nerve', window: 400, level: 200, description: 'Peripheral nerve — median nerve, carpal tunnel' },
-  { name: 'Soft Tissue', window: 400, level: 200, description: 'Soft tissue detail' },
-  { name: 'Fat Sat', window: 500, level: 250, description: 'Fat-saturated sequences' },
+  { name: 'Tendon', window: 450, level: 225, description: 'Tendons (T1/PD)' },
+  { name: 'Ligament', window: 350, level: 175, description: 'Ligaments (SL, TFCC)' },
+  { name: 'Bone Marrow', window: 700, level: 350, description: 'Bone marrow edema' },
+  { name: 'Edema', window: 1800, level: 900, description: 'Fluid/edema (STIR)' },
+  { name: 'Nerve', window: 400, level: 200, description: 'Peripheral nerve' },
   { name: 'Bright', window: 2000, level: 1000, description: 'High signal overview' },
-  { name: 'Dark', window: 300, level: 150, description: 'Low signal detail' },
+];
+
+// Colormaps available in Cornerstone
+const COLORMAPS = [
+  'Grayscale', 'Hot Iron', 'PET', 'Hot Metal Blue',
+  'PET 20 Step', 'Perfusion', 'Rainbow', 'Inferno',
+  'turbo',
 ];
 
 interface Props {
@@ -48,71 +48,174 @@ interface Props {
 export function WindowLevelPresets({ renderingEngineId, viewportIds, modality }: Props) {
   const mod = modality?.trim().toUpperCase() || '';
   const PRESETS = (mod === 'MR' || mod === 'MRI') ? MR_PRESETS : CT_PRESETS;
-  const [activePreset, setActivePreset] = useState<string | null>(null);
+  const [activePreset, setActivePreset] = useState<string | null>('Default');
   const [isOpen, setIsOpen] = useState(false);
+  const [showColormap, setShowColormap] = useState(false);
+  const [activeColormap, setActiveColormap] = useState('Grayscale');
+  const [invertColors, setInvertColors] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const colormapRef = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleClick = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [isOpen]);
-
-  const applyPreset = (preset: Preset) => {
+  const applyPreset = useCallback((preset: Preset) => {
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
     if (!engine) return;
-
     for (const vpId of viewportIds) {
       const viewport = engine.getViewport(vpId);
-      if (!viewport) continue;
-      if (viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
-
-      const properties = (viewport as cornerstone.Types.IVolumeViewport).getProperties();
+      if (!viewport || viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
       (viewport as cornerstone.Types.IVolumeViewport).setProperties({
-        ...properties,
-        voiRange: {
-          lower: preset.level - preset.window / 2,
-          upper: preset.level + preset.window / 2,
-        },
+        voiRange: { lower: preset.level - preset.window / 2, upper: preset.level + preset.window / 2 },
       });
       viewport.render();
     }
-
     setActivePreset(preset.name);
     setIsOpen(false);
-  };
+  }, [renderingEngineId, viewportIds]);
+
+  const applyColormap = useCallback((name: string) => {
+    const engine = cornerstone.getRenderingEngine(renderingEngineId);
+    if (!engine) return;
+    for (const vpId of viewportIds) {
+      const viewport = engine.getViewport(vpId);
+      if (!viewport || viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
+      if (name === 'Grayscale') {
+        (viewport as cornerstone.Types.IVolumeViewport).setProperties({ colormap: undefined as any, invert: invertColors });
+      } else {
+        (viewport as cornerstone.Types.IVolumeViewport).setProperties({ colormap: { name } as any, invert: false });
+      }
+      viewport.render();
+    }
+    setActiveColormap(name);
+    setShowColormap(false);
+  }, [renderingEngineId, viewportIds, invertColors]);
+
+  const toggleInvert = useCallback(() => {
+    const next = !invertColors;
+    setInvertColors(next);
+    const engine = cornerstone.getRenderingEngine(renderingEngineId);
+    if (!engine) return;
+    for (const vpId of viewportIds) {
+      const viewport = engine.getViewport(vpId);
+      if (!viewport || viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
+      (viewport as cornerstone.Types.IVolumeViewport).setProperties({ invert: next });
+      viewport.render();
+    }
+  }, [invertColors, renderingEngineId, viewportIds]);
+
+  // Number key shortcuts (1-9) for presets
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const num = parseInt(e.key);
+      if (num >= 1 && num <= PRESETS.length) {
+        e.preventDefault();
+        applyPreset(PRESETS[num - 1]);
+      }
+      if (e.key === 'i' || e.key === 'I') {
+        toggleInvert();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [PRESETS, applyPreset, toggleInvert]);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!isOpen && !showColormap) return;
+    const handler = (e: MouseEvent) => {
+      if (isOpen && dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setIsOpen(false);
+      if (showColormap && colormapRef.current && !colormapRef.current.contains(e.target as Node)) setShowColormap(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [isOpen, showColormap]);
+
+  const itemStyle = (active: boolean): React.CSSProperties => ({
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    width: '100%', padding: '7px 12px', background: 'none', border: 'none',
+    color: active ? 'var(--accent)' : 'var(--text)', cursor: 'pointer',
+    fontSize: '13px', textAlign: 'left',
+  });
 
   return (
-    <div className="wl-dropdown" ref={dropdownRef}>
-      <button
-        className={`toolbar-btn ${isOpen ? 'active' : ''}`}
-        onClick={() => setIsOpen(!isOpen)}
-        title="Window/Level Presets"
-      >
-        <span className="tool-icon">◐</span>
-        <span className="tool-label">{activePreset || 'W/L'}</span>
-        <span className="wl-dropdown-arrow">{isOpen ? '▲' : '▼'}</span>
-      </button>
-      {isOpen && (
-        <div className="wl-dropdown-menu">
-          {PRESETS.map((preset) => (
+    <>
+      {/* W/L Presets */}
+      <div className="wl-dropdown" ref={dropdownRef} style={{ position: 'relative' }}>
+        <button
+          className={`toolbar-btn ${isOpen ? 'active' : ''}`}
+          onClick={() => { setIsOpen(!isOpen); setShowColormap(false); }}
+          title="Window/Level Presets (1-9)"
+        >
+          <span className="tool-icon">◐</span>
+          <span className="tool-label">{activePreset || 'W/L'}</span>
+          <span style={{ fontSize: '8px', marginLeft: 2 }}>{isOpen ? '▲' : '▼'}</span>
+        </button>
+        {isOpen && (
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, zIndex: 100, minWidth: 200,
+            background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.5)', padding: '4px 0',
+          }}>
+            {PRESETS.map((preset, idx) => (
+              <button
+                key={preset.name}
+                style={itemStyle(activePreset === preset.name)}
+                onClick={() => applyPreset(preset)}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+              >
+                <span>
+                  {activePreset === preset.name && <span style={{ marginRight: 6 }}>&#10003;</span>}
+                  {preset.name}
+                </span>
+                <span style={{ color: 'var(--text-muted)', fontSize: '12px', fontWeight: 600 }}>{idx + 1}</span>
+              </button>
+            ))}
+            <div style={{ borderTop: '1px solid var(--border)', margin: '4px 0' }} />
             <button
-              key={preset.name}
-              className={`wl-dropdown-item ${activePreset === preset.name ? 'active' : ''}`}
-              onClick={() => applyPreset(preset)}
+              style={itemStyle(invertColors)}
+              onClick={toggleInvert}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
             >
-              <span className="wl-dropdown-name">{preset.name}</span>
-              <span className="wl-dropdown-desc">W:{preset.window} L:{preset.level}</span>
+              <span>{invertColors && <span style={{ marginRight: 6 }}>&#10003;</span>}Negative</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>I</span>
             </button>
-          ))}
-        </div>
-      )}
-    </div>
+          </div>
+        )}
+      </div>
+
+      {/* Colormap */}
+      <div ref={colormapRef} style={{ position: 'relative' }}>
+        <button
+          className={`toolbar-btn ${showColormap ? 'active' : ''}`}
+          onClick={() => { setShowColormap(!showColormap); setIsOpen(false); }}
+          title="Pseudo Color Map"
+        >
+          <span className="tool-icon" style={{ background: 'linear-gradient(90deg, #000, #f00, #ff0, #fff)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontWeight: 900 }}>C</span>
+          <span className="tool-label">Color</span>
+          <span style={{ fontSize: '8px', marginLeft: 2 }}>{showColormap ? '▲' : '▼'}</span>
+        </button>
+        {showColormap && (
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, zIndex: 100, minWidth: 180,
+            background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.5)', padding: '4px 0',
+          }}>
+            {COLORMAPS.map(cm => (
+              <button
+                key={cm}
+                style={itemStyle(activeColormap === cm)}
+                onClick={() => applyColormap(cm)}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+              >
+                <span>{activeColormap === cm && <span style={{ marginRight: 6 }}>&#10003;</span>}{cm}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

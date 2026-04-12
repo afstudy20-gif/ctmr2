@@ -6,7 +6,7 @@ import { getToolNames } from './initCornerstone';
 const MPR_TOOL_GROUP_ID = 'mprToolGroup';
 const VOL3D_TOOL_GROUP_ID = 'vol3dToolGroup';
 
-export type ToolName = 'WindowLevel' | 'Pan' | 'Zoom' | 'Length' | 'Angle' | 'CobbAngle' | 'Crosshairs' | 'TrackballRotate' | 'StackScroll' | 'PlanarFreehandROI' | 'Probe';
+export type ToolName = 'WindowLevel' | 'Pan' | 'Zoom' | 'Length' | 'Angle' | 'CobbAngle' | 'ArrowAnnotate' | 'Bidirectional' | 'Crosshairs' | 'TrackballRotate' | 'StackScroll' | 'PlanarFreehandROI' | 'Probe';
 
 let mprToolGroup: cornerstoneTools.Types.IToolGroup | undefined;
 let vol3dToolGroup: cornerstoneTools.Types.IToolGroup | undefined;
@@ -32,6 +32,8 @@ export function setupToolGroups(renderingEngineId: string): void {
   mprGroup.addTool(names.Length);
   mprGroup.addTool(names.Angle);
   mprGroup.addTool(names.CobbAngle);
+  mprGroup.addTool(names.ArrowAnnotate);
+  mprGroup.addTool(names.Bidirectional);
   mprGroup.addTool(names.PlanarFreehandROI);
   mprGroup.addTool(names.Probe);
   mprGroup.addTool(names.Crosshairs, {
@@ -146,9 +148,10 @@ export function setActiveTool(name: ToolName): void {
   // Deactivate ALL tools before re-assigning primary binding.
   // Drawing tools (PlanarFreehandROI, Probe) need Crosshairs fully disabled
   // because Passive crosshairs can intercept clicks near existing annotations.
-  const isDrawingTool = name === 'PlanarFreehandROI' || name === 'Probe' || name === 'Angle' || name === 'CobbAngle';
+  const isDrawingTool = name === 'PlanarFreehandROI' || name === 'Probe' || name === 'Angle' || name === 'CobbAngle' || name === 'ArrowAnnotate' || name === 'Bidirectional';
   const allPrimaryTools = [
-    names.WindowLevel, names.Length, names.Angle, names.CobbAngle, names.Crosshairs,
+    names.WindowLevel, names.Length, names.Angle, names.CobbAngle,
+    names.ArrowAnnotate, names.Bidirectional, names.Crosshairs,
     names.PlanarFreehandROI, names.Probe, names.Pan, names.Zoom,
   ];
   for (const t of allPrimaryTools) {

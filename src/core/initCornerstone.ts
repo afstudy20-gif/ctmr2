@@ -43,6 +43,8 @@ export async function initCornerstone(): Promise<void> {
     LengthTool,
     AngleTool,
     CobbAngleTool,
+    ArrowAnnotateTool,
+    BidirectionalTool,
     CrosshairsTool,
     TrackballRotateTool,
     PlanarFreehandROITool,
@@ -56,6 +58,8 @@ export async function initCornerstone(): Promise<void> {
   cornerstoneTools.addTool(LengthTool);
   cornerstoneTools.addTool(AngleTool);
   cornerstoneTools.addTool(CobbAngleTool);
+  cornerstoneTools.addTool(ArrowAnnotateTool);
+  cornerstoneTools.addTool(BidirectionalTool);
   cornerstoneTools.addTool(CrosshairsTool);
   cornerstoneTools.addTool(TrackballRotateTool);
   cornerstoneTools.addTool(PlanarFreehandROITool);
@@ -78,5 +82,7 @@ export function getToolNames() {
     Probe: cornerstoneTools.ProbeTool.toolName,
     Angle: cornerstoneTools.AngleTool.toolName,
     CobbAngle: cornerstoneTools.CobbAngleTool.toolName,
+    ArrowAnnotate: cornerstoneTools.ArrowAnnotateTool.toolName,
+    Bidirectional: cornerstoneTools.BidirectionalTool.toolName,
   };
 }
