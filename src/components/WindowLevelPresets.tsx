@@ -22,11 +22,18 @@ const CT_PRESETS: Preset[] = [
 ];
 
 const MR_PRESETS: Preset[] = [
+  // General MR
   { name: 'T1', window: 800, level: 400, description: 'T1 weighted — anatomy' },
   { name: 'T2', window: 1200, level: 600, description: 'T2 weighted — fluid bright' },
   { name: 'STIR/PD', window: 1500, level: 750, description: 'STIR / Proton Density' },
+  // Hand/Wrist specific
+  { name: 'Tendon', window: 450, level: 225, description: 'Tendons — low-signal structures against fat (T1/PD)' },
+  { name: 'Ligament', window: 350, level: 175, description: 'Ligaments — fine hypointense detail (SL, TFCC)' },
+  { name: 'Cartilage', window: 550, level: 275, description: 'Articular cartilage — intermediate signal' },
+  { name: 'Bone Marrow', window: 700, level: 350, description: 'Bone marrow — edema detection (T2/STIR)' },
+  { name: 'Edema', window: 1800, level: 900, description: 'Fluid/edema — high sensitivity (STIR)' },
+  { name: 'Nerve', window: 400, level: 200, description: 'Peripheral nerve — median nerve, carpal tunnel' },
   { name: 'Soft Tissue', window: 400, level: 200, description: 'Soft tissue detail' },
-  { name: 'Bone/Cartilage', window: 600, level: 300, description: 'Bone and cartilage' },
   { name: 'Fat Sat', window: 500, level: 250, description: 'Fat-saturated sequences' },
   { name: 'Bright', window: 2000, level: 1000, description: 'High signal overview' },
   { name: 'Dark', window: 300, level: 150, description: 'Low signal detail' },
