@@ -107,12 +107,12 @@ export function DicomDropzone({ onFilesLoaded, isLoading }: Props) {
           ref={inputRef}
           type="file"
           multiple
-          accept=".dcm,.dicom,.DCM,.DICOM,application/dicom"
+          accept="*/*"
           onChange={handleFileSelect}
           style={{ display: 'none' }}
         />
         <p className="dropzone-hint">
-          Supports .dcm files and DICOMDIR folders with nested subfolders.
+          Supports .dcm files and DICOMDIR folders with nested subfolders. Files without .dcm extension are also accepted.
           <br />
           All processing happens locally in your browser.
         </p>
@@ -152,12 +152,13 @@ async function readEntry(entry: FileSystemEntry): Promise<File[]> {
 
 function filterDicomFiles(files: File[]): File[] {
   return files.filter((file) => {
+    // Skip obvious non-DICOM files
     const name = file.name.toLowerCase();
-    return (
-      name.endsWith('.dcm') ||
-      name.endsWith('.dicom') ||
-      !name.includes('.') ||
-      file.type === 'application/dicom'
-    );
+    const skipExts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.txt', '.pdf', '.xml', '.html', '.json', '.csv', '.zip', '.tar', '.gz', '.exe', '.dll', '.js', '.css', '.md', '.yaml', '.yml', '.log', '.mp4', '.avi', '.mov'];
+    if (skipExts.some(ext => name.endsWith(ext))) return false;
+    // Accept everything else — DICOM files often have no extension or non-standard extensions
+    // (.dcm, .dicom, .ima, .img, numeric names like "1.2.840...", etc.)
+    // The actual DICOM validation happens in loadDicomFiles via dicomParser
+    return true;
   });
 }
