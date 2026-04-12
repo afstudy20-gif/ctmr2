@@ -647,6 +647,38 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
     updateCameraAngle();
   }, [updateCameraAngle]);
 
+  // 3D anatomical orientation presets
+  const setOrientationView = useCallback((orientation: 'anterior' | 'posterior' | 'left' | 'right' | 'superior' | 'inferior') => {
+    const viewport = getViewport3d();
+    if (!viewport) return;
+    const cam = viewport.getCamera();
+    if (!cam.focalPoint) return;
+
+    const dist = cam.position && cam.focalPoint
+      ? Math.sqrt((cam.position[0] - cam.focalPoint[0]) ** 2 + (cam.position[1] - cam.focalPoint[1]) ** 2 + (cam.position[2] - cam.focalPoint[2]) ** 2)
+      : 1000;
+
+    // LPS: +X=Left, +Y=Posterior, +Z=Superior
+    let dir: [number, number, number];
+    let up: [number, number, number] = [0, 0, 1]; // default: Z-up
+    switch (orientation) {
+      case 'anterior':  dir = [0, -1, 0]; break;     // look from anterior (−Y) toward posterior
+      case 'posterior': dir = [0, 1, 0]; break;       // look from posterior (+Y) toward anterior
+      case 'left':      dir = [1, 0, 0]; break;       // look from left (+X)
+      case 'right':     dir = [-1, 0, 0]; break;      // look from right (−X)
+      case 'superior':  dir = [0, 0, 1]; up = [0, -1, 0]; break;  // look from top
+      case 'inferior':  dir = [0, 0, -1]; up = [0, 1, 0]; break;  // look from bottom
+    }
+
+    viewport.setCamera({
+      ...cam,
+      position: [cam.focalPoint[0] - dir[0] * dist, cam.focalPoint[1] - dir[1] * dist, cam.focalPoint[2] - dir[2] * dist] as cornerstone.Types.Point3,
+      viewUp: up as cornerstone.Types.Point3,
+    });
+    viewport.render();
+    updateCameraAngle();
+  }, [updateCameraAngle]);
+
   // Slider helper
   const SliderRow = ({ label, value, min, max, step, unit, onChange }: {
     label: string; value: number; min: number; max: number; step: number; unit?: string;
@@ -797,6 +829,17 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
         <button className="render-mode-btn" onClick={() => setAngleView(0, 30)} title="Cranial 30°">Cr30</button>
         <button className="render-mode-btn" onClick={() => setAngleView(0, -30)} title="Caudal 30°">Ca30</button>
         <button className="render-mode-btn" onClick={() => setAngleView(90, 0)} title="Left lateral">LAT</button>
+      </div>
+
+      {/* 3D Orientation presets */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '4px 0', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '10px', color: 'var(--text-muted)', flexShrink: 0 }}>Orient:</span>
+        <button className="render-mode-btn" onClick={() => setOrientationView('anterior')} title="Anterior view" style={{ fontSize: '10px', padding: '2px 6px' }}>Ant</button>
+        <button className="render-mode-btn" onClick={() => setOrientationView('posterior')} title="Posterior view" style={{ fontSize: '10px', padding: '2px 6px' }}>Post</button>
+        <button className="render-mode-btn" onClick={() => setOrientationView('left')} title="Left view" style={{ fontSize: '10px', padding: '2px 6px' }}>Left</button>
+        <button className="render-mode-btn" onClick={() => setOrientationView('right')} title="Right view" style={{ fontSize: '10px', padding: '2px 6px' }}>Right</button>
+        <button className="render-mode-btn" onClick={() => setOrientationView('superior')} title="Superior view" style={{ fontSize: '10px', padding: '2px 6px' }}>Sup</button>
+        <button className="render-mode-btn" onClick={() => setOrientationView('inferior')} title="Inferior view" style={{ fontSize: '10px', padding: '2px 6px' }}>Inf</button>
       </div>
     </div>
   );

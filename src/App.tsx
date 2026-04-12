@@ -17,6 +17,7 @@ import { SeriesPanel } from './components/SeriesPanel';
 import { TAVIPanel, TAVIPanelHandle } from './components/TAVIPanel';
 import { ViewAnglePresets } from './components/ViewAnglePresets';
 import { HUProbeOverlay } from './components/HUProbeOverlay';
+import { DicomInfoOverlay } from './components/DicomInfoOverlay';
 import { HandMRPanel, HandMRPanelHandle } from './components/HandMRPanel';
 
 const RENDERING_ENGINE_ID = 'myRenderingEngine';
@@ -491,6 +492,15 @@ export default function App() {
 
             {/* HU value probe overlay on all viewports */}
             {activeSeries && <HUProbeOverlay renderingEngineId={RENDERING_ENGINE_ID} volumeId={VOLUME_ID} />}
+            {activeSeries && (
+              <DicomInfoOverlay
+                renderingEngineId={RENDERING_ENGINE_ID}
+                patientName={activeSeries.patientName}
+                studyDescription={activeSeries.studyDescription}
+                seriesDescription={activeSeries.seriesDescription}
+                modality={activeSeries.modality}
+              />
+            )}
           </div>
 
           {viewportMode !== 'volume-3d' && (
