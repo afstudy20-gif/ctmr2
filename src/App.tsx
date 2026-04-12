@@ -17,13 +17,14 @@ import { SeriesPanel } from './components/SeriesPanel';
 import { TAVIPanel, TAVIPanelHandle } from './components/TAVIPanel';
 import { ViewAnglePresets } from './components/ViewAnglePresets';
 import { HUProbeOverlay } from './components/HUProbeOverlay';
+import { HandMRPanel, HandMRPanelHandle } from './components/HandMRPanel';
 
 const RENDERING_ENGINE_ID = 'myRenderingEngine';
 const VOLUME_ID = 'cornerstoneStreamingImageVolume:myVolume';
 const VIEWPORT_IDS = ['axial', 'sagittal', 'coronal', 'volume3d'];
 const MPR_VIEWPORT_IDS = ['axial', 'sagittal', 'coronal'];
 
-type RightPanel = null | '3d' | 'tavi';
+type RightPanel = null | '3d' | 'tavi' | 'hand-mr';
 
 interface VolumeResult {
   name: string;
@@ -45,6 +46,7 @@ export default function App() {
   const [viewportMode, setViewportMode] = useState<ViewportMode>('standard');
   const renderingEngineRef = useRef<cornerstone.RenderingEngine | null>(null);
   const taviPanelRef = useRef<TAVIPanelHandle>(null);
+  const handMRPanelRef = useRef<HandMRPanelHandle>(null);
   const toolGroupsInitialized = useRef(false);
   const vol3dPanelRef = useRef<HTMLDivElement>(null);
 
@@ -88,6 +90,83 @@ export default function App() {
       }
     }, 100);
   }, [rightPanel, viewportMode]);
+
+  // Arrow keys: scroll crosshairs through slices
+  useEffect(() => {
+    if (!activeSeries) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+      e.preventDefault();
+      const engine = renderingEngineRef.current;
+      if (!engine) return;
+
+      // Find which viewport is currently hovered or focused
+      const hovered = document.querySelector('.viewport:hover');
+      let targetVpId = 'axial';
+      if (hovered) {
+        const el = hovered.querySelector('[data-viewport-uid]');
+        if (el) targetVpId = el.getAttribute('data-viewport-uid') || 'axial';
+        else {
+          // Match by viewport element id
+          const vpEl = hovered.querySelector('#viewport-axial, #viewport-sagittal, #viewport-coronal');
+          if (vpEl?.id === 'viewport-sagittal') targetVpId = 'sagittal';
+          else if (vpEl?.id === 'viewport-coronal') targetVpId = 'coronal';
+        }
+      }
+
+      const vp = engine.getViewport(targetVpId);
+      if (!vp) return;
+
+      const cam = vp.getCamera();
+      if (!cam.viewPlaneNormal || !cam.focalPoint) return;
+
+      // Move focal point along view plane normal (scroll direction) or in-plane (pan)
+      const step = e.shiftKey ? 5 : 1; // Shift = fast scroll
+      const spacing = 0.5; // mm per step
+
+      let delta: [number, number, number] = [0, 0, 0];
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        // Scroll through slices (along view plane normal)
+        const dir = e.key === 'ArrowUp' ? -1 : 1;
+        delta = [
+          cam.viewPlaneNormal[0] * dir * step * spacing,
+          cam.viewPlaneNormal[1] * dir * step * spacing,
+          cam.viewPlaneNormal[2] * dir * step * spacing,
+        ];
+      } else {
+        // ArrowLeft/Right: move crosshair in-plane (along viewRight direction)
+        // viewRight = cross(viewUp, viewPlaneNormal)
+        const up = cam.viewUp || [0, 0, 1];
+        const n = cam.viewPlaneNormal;
+        const right: [number, number, number] = [
+          up[1] * n[2] - up[2] * n[1],
+          up[2] * n[0] - up[0] * n[2],
+          up[0] * n[1] - up[1] * n[0],
+        ];
+        const dir = e.key === 'ArrowRight' ? 1 : -1;
+        delta = [right[0] * dir * step * spacing, right[1] * dir * step * spacing, right[2] * dir * step * spacing];
+      }
+
+      const newFocal: cornerstone.Types.Point3 = [
+        cam.focalPoint[0] + delta[0],
+        cam.focalPoint[1] + delta[1],
+        cam.focalPoint[2] + delta[2],
+      ];
+
+      // Update crosshairs position by setting camera focal point
+      vp.setCamera({ ...cam, focalPoint: newFocal, position: cam.position ? [
+        cam.position[0] + delta[0], cam.position[1] + delta[1], cam.position[2] + delta[2]
+      ] as cornerstone.Types.Point3 : undefined });
+      vp.render();
+
+      // Sync other viewports via crosshair tool
+      try { resetCrosshairsToCenter(RENDERING_ENGINE_ID); } catch { /* ignore */ }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeSeries]);
 
   const handleFilesLoaded = useCallback(
     async (files: File[]) => {
@@ -287,9 +366,20 @@ export default function App() {
           }
         }, 150);
       } else if (prev === 'tavi' && next !== 'tavi') {
-        setViewportMode('standard');
+        setViewportMode(next === 'hand-mr' ? 'hand-mr' : 'standard');
         setReportExpanded(false);
         exitDoubleObliqueMode(RENDERING_ENGINE_ID);
+        resizeViewports();
+      }
+      if (next === 'hand-mr') {
+        setViewportMode('hand-mr');
+        setReportExpanded(false);
+        setTimeout(() => {
+          const engine = renderingEngineRef.current;
+          if (engine) engine.resize(true, false);
+        }, 150);
+      } else if (prev === 'hand-mr' && next !== 'hand-mr' && next !== 'tavi') {
+        setViewportMode('standard');
         resizeViewports();
       }
       return next;
@@ -383,6 +473,7 @@ export default function App() {
             }
           }}>3D</button>
           <button className={`toolbar-btn ${rightPanel === 'tavi' ? 'active' : ''}`} onClick={() => toggleRightPanel('tavi')}>TAVI</button>
+          <button className={`toolbar-btn ${rightPanel === 'hand-mr' ? 'active' : ''}`} onClick={() => toggleRightPanel('hand-mr')}>Hand MR</button>
         </div>
       )}
 
@@ -446,6 +537,24 @@ export default function App() {
                   onViewportModeChange={handleTaviModeChange}
                   panelRef={taviPanelRef}
                   onReportToggle={setReportExpanded}
+                />
+              </div>
+            </div>
+          )}
+
+          {rightPanel === 'hand-mr' && (
+            <div className="side-panel" style={{ width: '360px' }}>
+              <div className="side-panel-tabs">
+                <button className="side-panel-tab active">Hand MR</button>
+                <button className="side-panel-close" onClick={() => { setRightPanel(null); setViewportMode('standard'); resizeViewports(); }}>×</button>
+              </div>
+              <div className="side-panel-body" style={{ padding: 0 }}>
+                <HandMRPanel
+                  ref={handMRPanelRef}
+                  renderingEngineId={RENDERING_ENGINE_ID}
+                  volumeId={VOLUME_ID}
+                  seriesList={seriesList}
+                  onLoadSeries={loadSeries}
                 />
               </div>
             </div>
