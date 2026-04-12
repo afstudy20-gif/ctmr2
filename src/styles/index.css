@@ -150,8 +150,9 @@ button:focus:not(:focus-visible) {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   gap: 1px;
-  overflow-x: auto;
-  overflow-y: visible;
+  overflow: visible;
+  position: relative;
+  z-index: 50;
 }
 
 .toolbar-row::-webkit-scrollbar {
