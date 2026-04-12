@@ -219,8 +219,36 @@ export default function App() {
       const vp = engine.getViewport('axial') as cornerstone.Types.IVolumeViewport | undefined;
       if (vp) {
         vp.setProperties({ interpolationType: cornerstone.Enums.InterpolationType.LINEAR });
+        // Disable MIP for 2D stack viewing
+        if ('setBlendMode' in vp) {
+          (vp as any).setBlendMode(cornerstone.Enums.BlendModes.COMPOSITE);
+          (vp as any).resetSlabThickness?.();
+        }
         vp.resetCamera();
         vp.render();
+      }
+
+      // In 2D mode: set W/L as primary tool, disable crosshairs
+      setActiveTool('WindowLevel');
+
+      // Set orientation to match the acquisition plane
+      // (for coronal series, show coronal; for sagittal, show sagittal)
+      const desc = series.seriesDescription?.toUpperCase() || '';
+      if (desc.includes('COR')) {
+        // Coronal acquisition — show as coronal
+        const vpC = engine.getViewport('axial') as any;
+        if (vpC?.setOrientation) {
+          vpC.setOrientation(cornerstone.Enums.OrientationAxis.CORONAL);
+          vpC.resetCamera();
+          vpC.render();
+        }
+      } else if (desc.includes('SAG')) {
+        const vpS = engine.getViewport('axial') as any;
+        if (vpS?.setOrientation) {
+          vpS.setOrientation(cornerstone.Enums.OrientationAxis.SAGITTAL);
+          vpS.resetCamera();
+          vpS.render();
+        }
       }
     } catch (err: any) {
       setError(`Failed to open 2D viewer: ${err.message}`);
