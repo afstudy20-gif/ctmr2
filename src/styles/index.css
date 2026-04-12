@@ -2358,3 +2358,11 @@ button:focus:not(:focus-visible) {
     display: none !important;
   }
 }
+
+/* ============ Hide Patient Info ============ */
+body.hide-patient-info .patient-info {
+  visibility: hidden;
+}
+body.hide-patient-info [id^="dicom-overlay-"] > div:first-child {
+  visibility: hidden;
+}
