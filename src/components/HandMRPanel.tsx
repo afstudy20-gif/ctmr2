@@ -104,6 +104,8 @@ export const HandMRPanel = forwardRef<HandMRPanelHandle, Props>(function HandMRP
 ) {
   const [activeMeasurement, setActiveMeasurement] = useState<string | null>(null);
   const [results, setResults] = useState<Map<string, MeasurementResult>>(new Map());
+  const [showMeasurements, setShowMeasurements] = useState(false);
+  const [showComputedValues, setShowComputedValues] = useState(false);
 
   useImperativeHandle(ref, () => ({
     resetAll: () => {
@@ -234,10 +236,14 @@ export const HandMRPanel = forwardRef<HandMRPanelHandle, Props>(function HandMRP
         <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>El / Bilek MRI Inceleme Araclari</div>
       </div>
 
-      {/* Measurements */}
+      {/* Measurements — collapsible */}
       <div style={sectionStyle}>
-        <div style={headerStyle}>Measurements</div>
-        {MEASUREMENTS.map(def => {
+        <div style={{ ...headerStyle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: showMeasurements ? 6 : 0 }}
+             onClick={() => setShowMeasurements(!showMeasurements)}>
+          <span>Measurements {results.size > 0 && `(${results.size})`}</span>
+          <span style={{ fontSize: '10px' }}>{showMeasurements ? '▼' : '▶'}</span>
+        </div>
+        {showMeasurements && MEASUREMENTS.map(def => {
           const result = results.get(def.key);
           const isActive = activeMeasurement === def.key;
           return (
@@ -270,20 +276,26 @@ export const HandMRPanel = forwardRef<HandMRPanelHandle, Props>(function HandMRP
         })}
       </div>
 
-      {/* Carpal Height Ratio (computed) */}
+      {/* Carpal Height Ratio (computed) — collapsible */}
       <div style={sectionStyle}>
-        <div style={headerStyle}>Computed Values</div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' }}>
-          <div>
-            <div style={{ fontSize: '12px', fontWeight: 600 }}>Carpal Height Ratio (Youm)</div>
-            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Normal: 0.51-0.57</div>
-          </div>
-          <div style={{ fontWeight: 700, fontSize: '14px', color: carpalHeightRatio
-            ? (carpalHeightRatio >= 0.51 && carpalHeightRatio <= 0.57 ? '#4caf50' : '#ff5252')
-            : 'var(--text-muted)' }}>
-            {carpalHeightRatio ? carpalHeightRatio.toFixed(3) : '—'}
-          </div>
+        <div style={{ ...headerStyle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: showComputedValues ? 6 : 0 }}
+             onClick={() => setShowComputedValues(!showComputedValues)}>
+          <span>Computed Values {carpalHeightRatio ? `(${carpalHeightRatio.toFixed(3)})` : ''}</span>
+          <span style={{ fontSize: '10px' }}>{showComputedValues ? '▼' : '▶'}</span>
         </div>
+        {showComputedValues && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' }}>
+            <div>
+              <div style={{ fontSize: '12px', fontWeight: 600 }}>Carpal Height Ratio (Youm)</div>
+              <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Normal: 0.51-0.57</div>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: '14px', color: carpalHeightRatio
+              ? (carpalHeightRatio >= 0.51 && carpalHeightRatio <= 0.57 ? '#4caf50' : '#ff5252')
+              : 'var(--text-muted)' }}>
+              {carpalHeightRatio ? carpalHeightRatio.toFixed(3) : '—'}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Results Summary */}

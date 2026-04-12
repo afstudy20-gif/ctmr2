@@ -46,7 +46,8 @@ interface Props {
 }
 
 export function WindowLevelPresets({ renderingEngineId, viewportIds, modality }: Props) {
-  const PRESETS = modality?.toUpperCase() === 'MR' ? MR_PRESETS : CT_PRESETS;
+  const mod = modality?.trim().toUpperCase() || '';
+  const PRESETS = (mod === 'MR' || mod === 'MRI') ? MR_PRESETS : CT_PRESETS;
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);

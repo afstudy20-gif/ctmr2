@@ -91,81 +91,65 @@ export default function App() {
     }, 100);
   }, [rightPanel, viewportMode]);
 
-  // Arrow keys: scroll crosshairs through slices
+  // Arrow keys: scroll through slices on the last-clicked viewport
   useEffect(() => {
     if (!activeSeries) return;
+    let lastClickedVpId = 'axial';
+
+    // Track which viewport was last clicked
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      for (const vpId of MPR_VIEWPORT_IDS) {
+        const el = document.getElementById(`viewport-${vpId}`);
+        if (el?.contains(target)) { lastClickedVpId = vpId; break; }
+      }
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+      if (!['ArrowUp', 'ArrowDown'].includes(e.key)) return;
       e.preventDefault();
+
       const engine = renderingEngineRef.current;
       if (!engine) return;
 
-      // Find which viewport is currently hovered or focused
-      const hovered = document.querySelector('.viewport:hover');
-      let targetVpId = 'axial';
-      if (hovered) {
-        const el = hovered.querySelector('[data-viewport-uid]');
-        if (el) targetVpId = el.getAttribute('data-viewport-uid') || 'axial';
-        else {
-          // Match by viewport element id
-          const vpEl = hovered.querySelector('#viewport-axial, #viewport-sagittal, #viewport-coronal');
-          if (vpEl?.id === 'viewport-sagittal') targetVpId = 'sagittal';
-          else if (vpEl?.id === 'viewport-coronal') targetVpId = 'coronal';
-        }
-      }
-
-      const vp = engine.getViewport(targetVpId);
+      const vp = engine.getViewport(lastClickedVpId) as cornerstone.Types.IVolumeViewport | undefined;
       if (!vp) return;
 
+      const delta = e.key === 'ArrowDown' ? 1 : -1;
+      const step = e.shiftKey ? 5 : 1;
+
+      // Scroll by moving focal point along view plane normal
       const cam = vp.getCamera();
-      if (!cam.viewPlaneNormal || !cam.focalPoint) return;
+      if (!cam.viewPlaneNormal || !cam.focalPoint || !cam.position) return;
 
-      // Move focal point along view plane normal (scroll direction) or in-plane (pan)
-      const step = e.shiftKey ? 5 : 1; // Shift = fast scroll
-      const spacing = 0.5; // mm per step
+      const volume = cornerstone.cache.getVolume(VOLUME_ID);
+      const spacing = volume?.imageData?.getSpacing?.() || [1, 1, 1];
+      const sliceSpacing = Math.min(spacing[0], spacing[1], spacing[2]);
+      const dist = delta * step * sliceSpacing;
 
-      let delta: [number, number, number] = [0, 0, 0];
-      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        // Scroll through slices (along view plane normal)
-        const dir = e.key === 'ArrowUp' ? -1 : 1;
-        delta = [
-          cam.viewPlaneNormal[0] * dir * step * spacing,
-          cam.viewPlaneNormal[1] * dir * step * spacing,
-          cam.viewPlaneNormal[2] * dir * step * spacing,
-        ];
-      } else {
-        // ArrowLeft/Right: move crosshair in-plane (along viewRight direction)
-        // viewRight = cross(viewUp, viewPlaneNormal)
-        const up = cam.viewUp || [0, 0, 1];
-        const n = cam.viewPlaneNormal;
-        const right: [number, number, number] = [
-          up[1] * n[2] - up[2] * n[1],
-          up[2] * n[0] - up[0] * n[2],
-          up[0] * n[1] - up[1] * n[0],
-        ];
-        const dir = e.key === 'ArrowRight' ? 1 : -1;
-        delta = [right[0] * dir * step * spacing, right[1] * dir * step * spacing, right[2] * dir * step * spacing];
-      }
-
+      const n = cam.viewPlaneNormal;
       const newFocal: cornerstone.Types.Point3 = [
-        cam.focalPoint[0] + delta[0],
-        cam.focalPoint[1] + delta[1],
-        cam.focalPoint[2] + delta[2],
+        cam.focalPoint[0] + n[0] * dist,
+        cam.focalPoint[1] + n[1] * dist,
+        cam.focalPoint[2] + n[2] * dist,
+      ];
+      const newPos: cornerstone.Types.Point3 = [
+        cam.position[0] + n[0] * dist,
+        cam.position[1] + n[1] * dist,
+        cam.position[2] + n[2] * dist,
       ];
 
-      // Update crosshairs position by setting camera focal point
-      vp.setCamera({ ...cam, focalPoint: newFocal, position: cam.position ? [
-        cam.position[0] + delta[0], cam.position[1] + delta[1], cam.position[2] + delta[2]
-      ] as cornerstone.Types.Point3 : undefined });
+      vp.setCamera({ ...cam, focalPoint: newFocal, position: newPos });
       vp.render();
-
-      // Sync other viewports via crosshair tool
-      try { resetCrosshairsToCenter(RENDERING_ENGINE_ID); } catch { /* ignore */ }
     };
 
+    document.addEventListener('mousedown', handleClick);
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [activeSeries]);
 
   const handleFilesLoaded = useCallback(
