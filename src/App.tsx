@@ -188,20 +188,29 @@ export default function App() {
 
       const viewport3d = engine.getViewport('volume3d') as cornerstone.Types.IVolumeViewport;
       if (viewport3d) {
-        viewport3d.setProperties({ preset: 'CT-Chest-Contrast-Enhanced' });
+        const preset3d = (series.modality?.toUpperCase() === 'MR') ? 'MR-Default' : 'CT-Chest-Contrast-Enhanced';
+        viewport3d.setProperties({ preset: preset3d });
       }
 
-      // Default: enable 5mm Slab MIP + Coronary W/L (WW700/WL350) on all MPR viewports
-      // Only for CT modality — skip for MR and others
-      const isCT = series.modality?.toUpperCase() === 'CT';
+      // Modality-specific defaults
+      const modality = series.modality?.toUpperCase() || '';
+      const isCT = modality === 'CT';
+      const isMR = modality === 'MR';
+
       for (const vpId of MPR_VIEWPORT_IDS) {
         const vp = engine.getViewport(vpId) as cornerstone.Types.IVolumeViewport | undefined;
-        if (vp && 'setBlendMode' in vp && isCT) {
+        if (!vp || !('setBlendMode' in vp)) continue;
+
+        if (isCT) {
+          // CT: 5mm MIP slab + coronary W/L
           (vp as any).setBlendMode(cornerstone.Enums.BlendModes.MAXIMUM_INTENSITY_BLEND);
           (vp as any).setSlabThickness(5);
-          (vp as cornerstone.Types.IVolumeViewport).setProperties({
-            voiRange: { lower: 350 - 700 / 2, upper: 350 + 700 / 2 },
-          });
+          vp.setProperties({ voiRange: { lower: 0, upper: 700 } });
+        } else if (isMR) {
+          // MR: AVERAGE blend with thin slab for smoother through-plane appearance
+          (vp as any).setBlendMode(cornerstone.Enums.BlendModes.AVERAGE_INTENSITY_BLEND);
+          (vp as any).setSlabThickness(3);
+          // Auto W/L from data — don't override
         }
       }
 
@@ -350,7 +359,7 @@ export default function App() {
             resizeViewports();
           }} />
           <div className="toolbar-divider" />
-          <WindowLevelPresets renderingEngineId={RENDERING_ENGINE_ID} viewportIds={MPR_VIEWPORT_IDS} />
+          <WindowLevelPresets renderingEngineId={RENDERING_ENGINE_ID} viewportIds={MPR_VIEWPORT_IDS} modality={activeSeries?.modality} />
           <div className="toolbar-divider" />
           {viewportMode === 'tavi-oblique' && (
             <>

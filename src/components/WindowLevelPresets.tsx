@@ -8,7 +8,7 @@ interface Preset {
   description: string;
 }
 
-const PRESETS: Preset[] = [
+const CT_PRESETS: Preset[] = [
   { name: 'Coronary', window: 700, level: 350, description: 'Coronary arteries (standard)' },
   { name: 'TAVI', window: 555, level: 208, description: 'Aortic valve planning' },
   { name: 'CT Angio', window: 600, level: 300, description: 'Vascular contrast' },
@@ -21,12 +21,25 @@ const PRESETS: Preset[] = [
   { name: 'Mediastinum', window: 350, level: 50, description: 'Mediastinal' },
 ];
 
+const MR_PRESETS: Preset[] = [
+  { name: 'T1', window: 800, level: 400, description: 'T1 weighted — anatomy' },
+  { name: 'T2', window: 1200, level: 600, description: 'T2 weighted — fluid bright' },
+  { name: 'STIR/PD', window: 1500, level: 750, description: 'STIR / Proton Density' },
+  { name: 'Soft Tissue', window: 400, level: 200, description: 'Soft tissue detail' },
+  { name: 'Bone/Cartilage', window: 600, level: 300, description: 'Bone and cartilage' },
+  { name: 'Fat Sat', window: 500, level: 250, description: 'Fat-saturated sequences' },
+  { name: 'Bright', window: 2000, level: 1000, description: 'High signal overview' },
+  { name: 'Dark', window: 300, level: 150, description: 'Low signal detail' },
+];
+
 interface Props {
   renderingEngineId: string;
   viewportIds: string[];
+  modality?: string;
 }
 
-export function WindowLevelPresets({ renderingEngineId, viewportIds }: Props) {
+export function WindowLevelPresets({ renderingEngineId, viewportIds, modality }: Props) {
+  const PRESETS = modality?.toUpperCase() === 'MR' ? MR_PRESETS : CT_PRESETS;
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
