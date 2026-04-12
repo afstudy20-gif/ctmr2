@@ -407,6 +407,11 @@ button:focus:not(:focus-visible) {
   display: none;
 }
 
+.viewport-grid--single {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
 .viewport-grid--3d-only {
   grid-template-columns: 1fr;
   grid-template-rows: 1fr;

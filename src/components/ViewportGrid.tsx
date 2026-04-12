@@ -92,15 +92,19 @@ export function ViewportGrid({ hide3d, mode = 'standard' }: Props) {
 
   const gridClass = mode === 'volume-3d'
     ? 'viewport-grid viewport-grid--3d-only'
-    : mode === 'tavi-oblique'
-      ? 'viewport-grid viewport-grid--double-oblique'
-      : mode === 'tavi-crosshair'
-        ? 'viewport-grid viewport-grid--mpr-only'
-        : hide3d
+    : mode === 'stack-2d'
+      ? 'viewport-grid viewport-grid--single'
+      : mode === 'tavi-oblique'
+        ? 'viewport-grid viewport-grid--double-oblique'
+        : mode === 'tavi-crosshair'
           ? 'viewport-grid viewport-grid--mpr-only'
-          : expanded
-            ? 'viewport-grid viewport-grid--fullscreen'
-            : 'viewport-grid';
+          : mode === 'hand-mr'
+            ? 'viewport-grid viewport-grid--mpr-only'
+            : hide3d
+              ? 'viewport-grid viewport-grid--mpr-only'
+              : expanded
+                ? 'viewport-grid viewport-grid--fullscreen'
+                : 'viewport-grid';
 
   // Always render all 4 viewports so Cornerstone DOM elements persist across mode switches.
   // Visibility is controlled purely by CSS classes.
