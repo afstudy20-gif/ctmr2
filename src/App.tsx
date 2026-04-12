@@ -92,49 +92,77 @@ export default function App() {
     }, 100);
   }, [rightPanel, viewportMode]);
 
-  // Auto W/L: when scrolling in 2D or MPR mode, compute per-slice W/L
+  // Auto W/L: when scrolling, sample voxels around focal point to compute W/L
   useEffect(() => {
     if (!activeSeries) return;
     const engine = renderingEngineRef.current;
     if (!engine) return;
 
-    let lastSliceIndex = -1;
+    let lastFocalStr = '';
 
-    const autoWL = () => {
+    const autoWL = (vpId: string) => {
       try {
         const volume = cornerstone.cache.getVolume(VOLUME_ID) as any;
         if (!volume?.imageData || !volume?.voxelManager) return;
 
-        // Get current slice index from axial viewport
-        const vp = engine.getViewport('axial') as cornerstone.Types.IVolumeViewport | undefined;
+        const vp = engine.getViewport(vpId) as cornerstone.Types.IVolumeViewport | undefined;
         if (!vp) return;
         const cam = vp.getCamera();
         if (!cam.focalPoint) return;
 
-        const ijk = volume.imageData.worldToIndex(cam.focalPoint);
+        // Check if focal point actually changed
+        const focalStr = cam.focalPoint.map((v: number) => v.toFixed(1)).join(',');
+        if (focalStr === lastFocalStr) return;
+        lastFocalStr = focalStr;
+
         const dims = volume.imageData.getDimensions();
+        const ijk = volume.imageData.worldToIndex(cam.focalPoint);
+        const ci = Math.round(ijk[0]);
+        const cj = Math.round(ijk[1]);
+        const ck = Math.round(ijk[2]);
+
+        // Determine scroll axis from view plane normal
         const vpn = cam.viewPlaneNormal || [0, 0, 1];
         const absVpn = [Math.abs(vpn[0]), Math.abs(vpn[1]), Math.abs(vpn[2])];
         const scrollAxis = absVpn.indexOf(Math.max(...absVpn));
-        const sliceIdx = Math.round(ijk[scrollAxis]);
 
-        if (sliceIdx === lastSliceIndex) return;
-        lastSliceIndex = sliceIdx;
+        // Sample a grid of voxels on the current slice plane
+        const vm = volume.voxelManager;
+        const samples: number[] = [];
+        const step = 2; // sample every 2nd voxel for speed
 
-        // Get per-image data for this slice to compute auto W/L
-        const imageIds = volume.imageIds;
-        if (!imageIds || sliceIdx < 0 || sliceIdx >= imageIds.length) return;
+        if (scrollAxis === 2) {
+          // Axial: sample XY plane at z=ck
+          const k = Math.max(0, Math.min(dims[2] - 1, ck));
+          for (let j = 0; j < dims[1]; j += step) {
+            for (let i = 0; i < dims[0]; i += step) {
+              samples.push(vm.getAtIJK(i, j, k));
+            }
+          }
+        } else if (scrollAxis === 1) {
+          // Coronal: sample XZ plane at y=cj
+          const j = Math.max(0, Math.min(dims[1] - 1, cj));
+          for (let k = 0; k < dims[2]; k += step) {
+            for (let i = 0; i < dims[0]; i += step) {
+              samples.push(vm.getAtIJK(i, j, k));
+            }
+          }
+        } else {
+          // Sagittal: sample YZ plane at x=ci
+          const i = Math.max(0, Math.min(dims[0] - 1, ci));
+          for (let k = 0; k < dims[2]; k += step) {
+            for (let j = 0; j < dims[1]; j += step) {
+              samples.push(vm.getAtIJK(i, j, k));
+            }
+          }
+        }
 
-        const image = cornerstone.cache.getImage(imageIds[sliceIdx]);
-        if (!image?.voxelManager) return;
+        if (samples.length < 10) return;
 
-        const sliceData = image.voxelManager.getScalarData();
-        if (!sliceData || sliceData.length === 0) return;
-
-        // Percentile-based W/L (5th to 95th percentile for robust windowing)
-        const sorted = Float32Array.from(sliceData).sort();
-        const p5 = sorted[Math.floor(sorted.length * 0.05)];
-        const p95 = sorted[Math.floor(sorted.length * 0.95)];
+        // Percentile W/L (5th-95th)
+        samples.sort((a, b) => a - b);
+        const p5 = samples[Math.floor(samples.length * 0.05)];
+        const p95 = samples[Math.floor(samples.length * 0.95)];
         const ww = Math.max(1, p95 - p5);
         const wl = (p95 + p5) / 2;
 
@@ -143,16 +171,17 @@ export default function App() {
       } catch { /* ignore */ }
     };
 
-    // Listen for camera changes on axial viewport
-    const axialEl = document.getElementById('viewport-axial');
-    if (!axialEl) return;
+    // Listen for camera changes on all MPR viewports
+    const handlers: (() => void)[] = [];
+    for (const vpId of MPR_VIEWPORT_IDS) {
+      const el = document.getElementById(`viewport-${vpId}`);
+      if (!el) continue;
+      const h = () => setTimeout(() => autoWL(vpId), 30);
+      el.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED as any, h);
+      handlers.push(() => el.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED as any, h));
+    }
 
-    const handler = () => setTimeout(autoWL, 30);
-    axialEl.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED as any, handler);
-
-    return () => {
-      axialEl.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED as any, handler);
-    };
+    return () => handlers.forEach(h => h());
   }, [activeSeries, viewportMode]);
 
   // Arrow keys: scroll through slices on the last-clicked viewport
