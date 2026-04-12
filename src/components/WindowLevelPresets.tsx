@@ -60,17 +60,42 @@ export function WindowLevelPresets({ renderingEngineId, viewportIds, modality }:
   const applyPreset = useCallback((preset: Preset) => {
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
     if (!engine) return;
+
+    // For MR: preset W/L values are relative proportions of data range (0-2000 scale)
+    // We need to map them to the actual data range of the volume
+    const isMR = (mod === 'MR' || mod === 'MRI');
+    let dataMax = 2000; // default
+    if (isMR) {
+      try {
+        const volume = cornerstone.cache.getVolume('cornerstoneStreamingImageVolume:myVolume') as any;
+        if (volume?.voxelManager) {
+          const range = volume.voxelManager.getRange();
+          if (range) dataMax = range[1];
+        }
+      } catch { /* ignore */ }
+    }
+
     for (const vpId of viewportIds) {
       const viewport = engine.getViewport(vpId);
       if (!viewport || viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
+
+      let w = preset.window;
+      let l = preset.level;
+      if (isMR) {
+        // Scale preset values proportionally to actual data range
+        const scale = dataMax / 2000;
+        w = Math.round(preset.window * scale);
+        l = Math.round(preset.level * scale);
+      }
+
       (viewport as cornerstone.Types.IVolumeViewport).setProperties({
-        voiRange: { lower: preset.level - preset.window / 2, upper: preset.level + preset.window / 2 },
+        voiRange: { lower: l - w / 2, upper: l + w / 2 },
       });
       viewport.render();
     }
     setActivePreset(preset.name);
     setIsOpen(false);
-  }, [renderingEngineId, viewportIds]);
+  }, [renderingEngineId, viewportIds, mod]);
 
   const applyColormap = useCallback((name: string) => {
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
