@@ -108,41 +108,52 @@ export default function App() {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (!['ArrowUp', 'ArrowDown'].includes(e.key)) return;
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
       e.preventDefault();
 
       const engine = renderingEngineRef.current;
       if (!engine) return;
 
-      const vp = engine.getViewport(lastClickedVpId) as cornerstone.Types.IVolumeViewport | undefined;
-      if (!vp) return;
-
-      const delta = e.key === 'ArrowDown' ? 1 : -1;
       const step = e.shiftKey ? 5 : 1;
-
-      // Scroll by moving focal point along view plane normal
-      const cam = vp.getCamera();
-      if (!cam.viewPlaneNormal || !cam.focalPoint || !cam.position) return;
-
       const volume = cornerstone.cache.getVolume(VOLUME_ID);
       const spacing = volume?.imageData?.getSpacing?.() || [1, 1, 1];
       const sliceSpacing = Math.min(spacing[0], spacing[1], spacing[2]);
-      const dist = delta * step * sliceSpacing;
 
-      const n = cam.viewPlaneNormal;
-      const newFocal: cornerstone.Types.Point3 = [
-        cam.focalPoint[0] + n[0] * dist,
-        cam.focalPoint[1] + n[1] * dist,
-        cam.focalPoint[2] + n[2] * dist,
-      ];
-      const newPos: cornerstone.Types.Point3 = [
-        cam.position[0] + n[0] * dist,
-        cam.position[1] + n[1] * dist,
-        cam.position[2] + n[2] * dist,
-      ];
-
-      vp.setCamera({ ...cam, focalPoint: newFocal, position: newPos });
-      vp.render();
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        // Up/Down: scroll current viewport through slices
+        const vp = engine.getViewport(lastClickedVpId) as cornerstone.Types.IVolumeViewport | undefined;
+        if (!vp) return;
+        const cam = vp.getCamera();
+        if (!cam.viewPlaneNormal || !cam.focalPoint || !cam.position) return;
+        const delta = e.key === 'ArrowDown' ? 1 : -1;
+        const dist = delta * step * sliceSpacing;
+        const n = cam.viewPlaneNormal;
+        vp.setCamera({
+          ...cam,
+          focalPoint: [cam.focalPoint[0] + n[0] * dist, cam.focalPoint[1] + n[1] * dist, cam.focalPoint[2] + n[2] * dist] as cornerstone.Types.Point3,
+          position: [cam.position[0] + n[0] * dist, cam.position[1] + n[1] * dist, cam.position[2] + n[2] * dist] as cornerstone.Types.Point3,
+        });
+        vp.render();
+      } else {
+        // Left/Right: scroll the OTHER two viewports (not the current one)
+        // This creates a cross-navigation effect
+        const otherVpIds = MPR_VIEWPORT_IDS.filter(id => id !== lastClickedVpId);
+        for (const vpId of otherVpIds) {
+          const vp = engine.getViewport(vpId) as cornerstone.Types.IVolumeViewport | undefined;
+          if (!vp) continue;
+          const cam = vp.getCamera();
+          if (!cam.viewPlaneNormal || !cam.focalPoint || !cam.position) continue;
+          const delta = e.key === 'ArrowRight' ? 1 : -1;
+          const dist = delta * step * sliceSpacing;
+          const n = cam.viewPlaneNormal;
+          vp.setCamera({
+            ...cam,
+            focalPoint: [cam.focalPoint[0] + n[0] * dist, cam.focalPoint[1] + n[1] * dist, cam.focalPoint[2] + n[2] * dist] as cornerstone.Types.Point3,
+            position: [cam.position[0] + n[0] * dist, cam.position[1] + n[1] * dist, cam.position[2] + n[2] * dist] as cornerstone.Types.Point3,
+          });
+          vp.render();
+        }
+      }
     };
 
     document.addEventListener('mousedown', handleClick);

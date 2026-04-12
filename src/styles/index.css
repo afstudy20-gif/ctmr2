@@ -2361,8 +2361,11 @@ button:focus:not(:focus-visible) {
 
 /* ============ Hide Patient Info ============ */
 body.hide-patient-info .patient-info {
-  visibility: hidden;
+  display: none !important;
 }
-body.hide-patient-info [id^="dicom-overlay-"] > div:first-child {
-  visibility: hidden;
+body.hide-patient-info .app-header h1 + .patient-info {
+  display: none !important;
+}
+body.hide-patient-info .dicom-patient-text {
+  display: none !important;
 }

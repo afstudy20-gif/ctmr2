@@ -107,7 +107,7 @@ export function DicomInfoOverlay({ renderingEngineId, patientName, studyDescript
             zIndex: 15,
           }}>
             {/* Top-left: Patient info */}
-            <div style={{ position: 'absolute', top: 20, left: 6, fontSize: '10px', fontFamily: 'monospace', color: 'rgba(255,255,255,0.7)', lineHeight: 1.5 }}>
+            <div className="dicom-patient-text" style={{ position: 'absolute', top: 20, left: 6, fontSize: '10px', fontFamily: 'monospace', color: 'rgba(255,255,255,0.7)', lineHeight: 1.5 }}>
               {patientName && <div>{patientName}</div>}
               {studyDescription && <div>{studyDescription}</div>}
               {seriesDescription && <div>{seriesDescription}</div>}

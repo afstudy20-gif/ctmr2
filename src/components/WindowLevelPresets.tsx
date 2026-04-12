@@ -32,11 +32,12 @@ const MR_PRESETS: Preset[] = [
   { name: 'Bright', window: 2000, level: 1000, description: 'High signal overview' },
 ];
 
-// Colormaps available in Cornerstone
+// Colormaps — VTK.js preset names
 const COLORMAPS = [
-  'Grayscale', 'Hot Iron', 'PET', 'Hot Metal Blue',
-  'PET 20 Step', 'Perfusion', 'Rainbow', 'Inferno',
-  'turbo',
+  'Grayscale',
+  'hsv', 'jet', 'rainbow', 'Warm to Cool', 'Cool to Warm',
+  'Inferno (matplotlib)', 'Viridis (matplotlib)', 'Plasma (matplotlib)',
+  'Black-Body Radiation', 'X Ray', 'bone_Matlab',
 ];
 
 interface Props {
