@@ -70,9 +70,31 @@ export function DicomInfoOverlay({ renderingEngineId, patientName, studyDescript
       setInfos(newInfos);
     };
 
-    timerRef.current = window.setInterval(update, 300);
+    timerRef.current = window.setInterval(update, 200);
     update();
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+
+    // Also listen for VOI changes and camera changes for immediate updates
+    const engine = cornerstone.getRenderingEngine(renderingEngineId);
+    const handlers: (() => void)[] = [];
+    if (engine) {
+      for (const vpId of MPR_VP_IDS) {
+        const vp = engine.getViewport(vpId);
+        if (vp?.element) {
+          const h = () => setTimeout(update, 50);
+          vp.element.addEventListener(cornerstone.Enums.Events.VOI_MODIFIED, h as any);
+          vp.element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, h as any);
+          handlers.push(() => {
+            vp.element.removeEventListener(cornerstone.Enums.Events.VOI_MODIFIED, h as any);
+            vp.element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, h as any);
+          });
+        }
+      }
+    }
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      handlers.forEach(h => h());
+    };
   }, [renderingEngineId, hidden]);
 
   if (hidden) return null;
