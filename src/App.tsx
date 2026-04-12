@@ -190,11 +190,52 @@ export default function App() {
     [isInitialized]
   );
 
+  // Open series in 2D stack viewer (single viewport, scroll through slices)
+  const open2DViewer = useCallback(async (series: DicomSeriesInfo) => {
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+
+    setActiveSeries(series);
+    setViewportMode('stack-2d');
+    setRightPanel(null);
+
+    // Wait for layout to update
+    await new Promise(r => setTimeout(r, 200));
+    engine.resize(true, false);
+
+    // Use axial viewport as a stack viewport by setting volume and scrolling
+    try {
+      // Load volume if not already loaded
+      setIsLoading(true);
+      try { cornerstone.cache.removeVolumeLoadObject(VOLUME_ID); } catch {}
+      try { cornerstone.cache.purgeVolumeCache(); } catch {}
+
+      await createVolume(VOLUME_ID, series.imageIds, (loaded, total) => {
+        setLoadingProgress(`Loading: ${loaded}/${total}`);
+      });
+
+      await cornerstone.setVolumesForViewports(engine, [{ volumeId: VOLUME_ID }], ['axial']);
+
+      const vp = engine.getViewport('axial') as cornerstone.Types.IVolumeViewport | undefined;
+      if (vp) {
+        vp.setProperties({ interpolationType: cornerstone.Enums.InterpolationType.LINEAR });
+        vp.resetCamera();
+        vp.render();
+      }
+    } catch (err: any) {
+      setError(`Failed to open 2D viewer: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isInitialized]);
+
   const loadSeries = async (series: DicomSeriesInfo) => {
     const engine = renderingEngineRef.current;
     if (!engine) return;
 
     setActiveSeries(series);
+    // If in 2D mode, switch back to MPR
+    if (viewportMode === 'stack-2d') setViewportMode('standard');
     setIsLoading(true);
     setVolumeResults([]);
 
@@ -486,7 +527,7 @@ export default function App() {
       ) : (
         <div className={`main-content ${viewportMode === 'tavi-oblique' || viewportMode === 'tavi-crosshair' ? 'main-content--tavi-oblique' : ''} ${viewportMode === 'volume-3d' ? 'main-content--volume-3d' : ''}`}>
           {viewportMode !== 'volume-3d' && seriesList.length > 0 && (
-            <SeriesPanel seriesList={seriesList} activeSeriesUID={activeSeries?.seriesInstanceUID || ''} onSelectSeries={loadSeries} isLoading={isLoading} />
+            <SeriesPanel seriesList={seriesList} activeSeriesUID={activeSeries?.seriesInstanceUID || ''} onSelectSeries={loadSeries} onOpen2DViewer={open2DViewer} isLoading={isLoading} />
           )}
 
           <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', minWidth: 0 }}>

@@ -4,7 +4,7 @@ import { OrientationOverlay } from './OrientationOverlay';
 
 type ViewportName = 'axial' | 'sagittal' | 'coronal' | '3d';
 
-export type ViewportMode = 'standard' | 'tavi-crosshair' | 'tavi-oblique' | 'volume-3d' | 'hand-mr';
+export type ViewportMode = 'standard' | 'tavi-crosshair' | 'tavi-oblique' | 'volume-3d' | 'hand-mr' | 'stack-2d';
 
 // Labels per mode
 const LABELS: Record<ViewportMode, Record<ViewportName, string>> = {
@@ -13,6 +13,7 @@ const LABELS: Record<ViewportMode, Record<ViewportName, string>> = {
   'tavi-oblique': { axial: 'Reference (Longitudinal)', sagittal: 'Sagittal', coronal: 'Working (Cross-section)', '3d': '3D Volume' },
   'volume-3d': { axial: 'Axial', sagittal: 'Sagittal', coronal: 'Coronal', '3d': '3D Volume' },
   'hand-mr': { axial: 'Axial', sagittal: 'Sagittal', coronal: 'Coronal', '3d': '3D Volume' },
+  'stack-2d': { axial: '2D Viewer', sagittal: 'Sagittal', coronal: 'Coronal', '3d': '3D Volume' },
 };
 
 // Which viewports are visible per mode
@@ -22,6 +23,7 @@ const VISIBLE: Record<ViewportMode, Set<ViewportName>> = {
   'tavi-oblique': new Set(['axial', 'sagittal', 'coronal']),
   'volume-3d': new Set(['3d']),
   'hand-mr': new Set(['axial', 'sagittal', 'coronal']),
+  'stack-2d': new Set(['axial']),
 };
 
 interface Props {
