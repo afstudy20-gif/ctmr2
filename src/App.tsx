@@ -92,6 +92,69 @@ export default function App() {
     }, 100);
   }, [rightPanel, viewportMode]);
 
+  // Auto W/L: when scrolling in 2D or MPR mode, compute per-slice W/L
+  useEffect(() => {
+    if (!activeSeries) return;
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+
+    let lastSliceIndex = -1;
+
+    const autoWL = () => {
+      try {
+        const volume = cornerstone.cache.getVolume(VOLUME_ID) as any;
+        if (!volume?.imageData || !volume?.voxelManager) return;
+
+        // Get current slice index from axial viewport
+        const vp = engine.getViewport('axial') as cornerstone.Types.IVolumeViewport | undefined;
+        if (!vp) return;
+        const cam = vp.getCamera();
+        if (!cam.focalPoint) return;
+
+        const ijk = volume.imageData.worldToIndex(cam.focalPoint);
+        const dims = volume.imageData.getDimensions();
+        const vpn = cam.viewPlaneNormal || [0, 0, 1];
+        const absVpn = [Math.abs(vpn[0]), Math.abs(vpn[1]), Math.abs(vpn[2])];
+        const scrollAxis = absVpn.indexOf(Math.max(...absVpn));
+        const sliceIdx = Math.round(ijk[scrollAxis]);
+
+        if (sliceIdx === lastSliceIndex) return;
+        lastSliceIndex = sliceIdx;
+
+        // Get per-image data for this slice to compute auto W/L
+        const imageIds = volume.imageIds;
+        if (!imageIds || sliceIdx < 0 || sliceIdx >= imageIds.length) return;
+
+        const image = cornerstone.cache.getImage(imageIds[sliceIdx]);
+        if (!image?.voxelManager) return;
+
+        const sliceData = image.voxelManager.getScalarData();
+        if (!sliceData || sliceData.length === 0) return;
+
+        // Percentile-based W/L (5th to 95th percentile for robust windowing)
+        const sorted = Float32Array.from(sliceData).sort();
+        const p5 = sorted[Math.floor(sorted.length * 0.05)];
+        const p95 = sorted[Math.floor(sorted.length * 0.95)];
+        const ww = Math.max(1, p95 - p5);
+        const wl = (p95 + p5) / 2;
+
+        vp.setProperties({ voiRange: { lower: wl - ww / 2, upper: wl + ww / 2 } });
+        vp.render();
+      } catch { /* ignore */ }
+    };
+
+    // Listen for camera changes on axial viewport
+    const axialEl = document.getElementById('viewport-axial');
+    if (!axialEl) return;
+
+    const handler = () => setTimeout(autoWL, 30);
+    axialEl.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED as any, handler);
+
+    return () => {
+      axialEl.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED as any, handler);
+    };
+  }, [activeSeries, viewportMode]);
+
   // Arrow keys: scroll through slices on the last-clicked viewport
   useEffect(() => {
     if (!activeSeries) return;
