@@ -270,6 +270,10 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
 
   // ── Scalpel Tool: remove structures by painting on 3D viewport ──
   const [scalpelMode, setScalpelMode] = useState<ScalpelMode>('off');
+  // HU Crop range for 3D isolation
+  const [huCropEnabled, setHuCropEnabled] = useState(false);
+  const [huCropMin, setHuCropMin] = useState(100);
+  const [huCropMax, setHuCropMax] = useState(500);
   const scalpelCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const scalpelPointsRef = useRef<[number, number][]>([]);
   const volumeBackupRef = useRef<{ data: Float32Array | Int16Array | null; saved: boolean }>({ data: null, saved: false });
@@ -551,6 +555,49 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
     };
   }, [scalpelMode, applyScalpel]);
 
+  // Apply HU crop — set opacity to 0 outside the range, smooth ramp inside
+  const applyHuCrop = useCallback((enabled: boolean, minHU: number, maxHU: number) => {
+    const viewport = getViewport3d();
+    if (!viewport) return;
+    try {
+      const actor = viewport.getDefaultActor()?.actor;
+      if (!actor) return;
+      const property = (actor as any).getProperty?.();
+      if (!property) return;
+      const ofun = property.getScalarOpacity?.(0);
+      if (!ofun) return;
+
+      ofun.removeAllPoints();
+
+      if (!enabled) {
+        // Restore default CT-Chest-Contrast-Enhanced opacity
+        ofun.addPoint(-3024, 0);
+        ofun.addPoint(67, 0);
+        ofun.addPoint(251, 0.45);
+        ofun.addPoint(439, 0.625);
+        ofun.addPoint(3071, 0.616);
+      } else {
+        // Sharp crop: only show voxels in [minHU, maxHU]
+        const ramp = 20; // smooth transition width in HU
+        ofun.addPoint(-3024, 0);
+        ofun.addPoint(minHU - ramp, 0);
+        ofun.addPoint(minHU, 0.05);
+        ofun.addPoint(minHU + ramp, 0.4);
+        ofun.addPoint((minHU + maxHU) / 2, 0.6);
+        ofun.addPoint(maxHU - ramp, 0.5);
+        ofun.addPoint(maxHU, 0.05);
+        ofun.addPoint(maxHU + ramp, 0);
+        ofun.addPoint(3071, 0);
+      }
+
+      property.modified();
+      viewport.render();
+      console.log(`[HUCrop] ${enabled ? `${minHU}→${maxHU} HU` : 'disabled'}`);
+    } catch (e) {
+      console.warn('[HUCrop] Error:', e);
+    }
+  }, []);
+
   const zoom3d = (factor: number) => {
     const viewport = getViewport3d();
     if (!viewport) return;
@@ -787,31 +834,62 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
         ))}
       </div>
 
+      {/* HU Crop — isolate structures by HU range */}
+      <div style={{ padding: '4px 0', borderTop: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: huCropEnabled ? 4 : 0 }}>
+          <span style={{ fontSize: '10px', color: 'var(--text-muted)', flexShrink: 0 }}>Crop:</span>
+          <button
+            className={`render-mode-btn ${huCropEnabled ? 'active' : ''}`}
+            onClick={() => { const next = !huCropEnabled; setHuCropEnabled(next); applyHuCrop(next, huCropMin, huCropMax); }}
+            style={{ fontSize: '10px', padding: '2px 8px', fontWeight: 600 }}
+            title="Enable HU crop to isolate structures"
+          >
+            {huCropEnabled ? 'ON' : 'OFF'}
+          </button>
+          {/* Quick presets */}
+          <button className="render-mode-btn" onClick={() => { setHuCropMin(100); setHuCropMax(500); setHuCropEnabled(true); applyHuCrop(true, 100, 500); }}
+            title="Heart only (contrast 100-500 HU)" style={{ fontSize: '10px', padding: '2px 6px' }}>Heart</button>
+          <button className="render-mode-btn" onClick={() => { setHuCropMin(150); setHuCropMax(600); setHuCropEnabled(true); applyHuCrop(true, 150, 600); }}
+            title="Vessels (150-600 HU)" style={{ fontSize: '10px', padding: '2px 6px' }}>Vessels</button>
+          <button className="render-mode-btn" onClick={() => { setHuCropMin(200); setHuCropMax(1500); setHuCropEnabled(true); applyHuCrop(true, 200, 1500); }}
+            title="Bone (200-1500 HU)" style={{ fontSize: '10px', padding: '2px 6px' }}>Bone</button>
+          <button className="render-mode-btn" onClick={() => { setHuCropEnabled(false); applyHuCrop(false, 0, 0); }}
+            title="Reset — show all" style={{ fontSize: '10px', padding: '2px 6px' }}>Reset</button>
+        </div>
+        {huCropEnabled && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)', width: 30 }}>Min</span>
+              <input type="range" min={-1024} max={2000} value={huCropMin}
+                onChange={(e) => { const v = Number(e.target.value); setHuCropMin(v); applyHuCrop(true, v, huCropMax); }}
+                style={{ flex: 1, height: 3 }} />
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)', width: 45, textAlign: 'right' }}>{huCropMin} HU</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)', width: 30 }}>Max</span>
+              <input type="range" min={-500} max={3071} value={huCropMax}
+                onChange={(e) => { const v = Number(e.target.value); setHuCropMax(v); applyHuCrop(true, huCropMin, v); }}
+                style={{ flex: 1, height: 3 }} />
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)', width: 45, textAlign: 'right' }}>{huCropMax} HU</span>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Scalpel tool row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '10px', color: 'var(--text-muted)', flexShrink: 0 }}>Scalpel:</span>
         <button
           className={`render-mode-btn ${scalpelMode === 'draw' ? 'active' : ''}`}
           onClick={() => setScalpelMode(scalpelMode === 'draw' ? 'off' : 'draw')}
-          title="Draw freehand to erase structures. Left-click and drag to paint area."
+          title="Draw freehand to erase structures"
           style={{ fontSize: '10px', padding: '2px 8px', fontWeight: 600, color: scalpelMode === 'draw' ? '#ff3c3c' : undefined }}
         >
-          {scalpelMode === 'draw' ? '[ Drawing... ]' : 'Erase Region'}
+          {scalpelMode === 'draw' ? '[ Drawing... ]' : 'Erase'}
         </button>
-        <button
-          className="render-mode-btn"
-          onClick={undoScalpel}
-          title="Undo all scalpel edits — restore original volume"
-          style={{ fontSize: '10px', padding: '2px 8px' }}
-          disabled={!volumeBackupRef.current.saved}
-        >
-          Undo All
-        </button>
-        {scalpelMode === 'draw' && (
-          <span style={{ fontSize: '10px', color: '#ff3c3c', fontStyle: 'italic' }}>
-            Draw on 3D to erase. Click Erase Region again to stop.
-          </span>
-        )}
+        <button className="render-mode-btn" onClick={undoScalpel}
+          title="Undo all scalpel edits" style={{ fontSize: '10px', padding: '2px 8px' }}
+          disabled={!volumeBackupRef.current.saved}>Undo</button>
       </div>
 
       {/* C-arm angle display + quick angle views */}
