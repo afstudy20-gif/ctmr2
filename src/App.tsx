@@ -178,15 +178,25 @@ export default function App() {
 
       await cornerstone.setVolumesForViewports(engine, [{ volumeId: VOLUME_ID }], VIEWPORT_IDS);
 
+      // Set LINEAR interpolation on all MPR viewports for better reformat quality
+      for (const vpId of VIEWPORT_IDS) {
+        const vp = engine.getViewport(vpId) as cornerstone.Types.IVolumeViewport | undefined;
+        if (vp) {
+          vp.setProperties({ interpolationType: cornerstone.Enums.InterpolationType.LINEAR });
+        }
+      }
+
       const viewport3d = engine.getViewport('volume3d') as cornerstone.Types.IVolumeViewport;
       if (viewport3d) {
         viewport3d.setProperties({ preset: 'CT-Chest-Contrast-Enhanced' });
       }
 
       // Default: enable 5mm Slab MIP + Coronary W/L (WW700/WL350) on all MPR viewports
+      // Only for CT modality — skip for MR and others
+      const isCT = series.modality?.toUpperCase() === 'CT';
       for (const vpId of MPR_VIEWPORT_IDS) {
         const vp = engine.getViewport(vpId) as cornerstone.Types.IVolumeViewport | undefined;
-        if (vp && 'setBlendMode' in vp) {
+        if (vp && 'setBlendMode' in vp && isCT) {
           (vp as any).setBlendMode(cornerstone.Enums.BlendModes.MAXIMUM_INTENSITY_BLEND);
           (vp as any).setSlabThickness(5);
           (vp as cornerstone.Types.IVolumeViewport).setProperties({
@@ -202,8 +212,8 @@ export default function App() {
       engine.renderViewports(VIEWPORT_IDS);
 
       setTimeout(() => {
-        resetCrosshairsToCenter(RENDERING_ENGINE_ID);
-        setTimeout(() => resetCrosshairsToCenter(RENDERING_ENGINE_ID), 300);
+        try { resetCrosshairsToCenter(RENDERING_ENGINE_ID); } catch { /* ignore */ }
+        setTimeout(() => { try { resetCrosshairsToCenter(RENDERING_ENGINE_ID); } catch { /* ignore */ } }, 300);
       }, 500);
     } catch (err: any) {
       setError(`Failed to load series: ${err.message}`);
