@@ -57,14 +57,22 @@ export function WindowLevelPresets({ renderingEngineId, viewportIds, modality }:
   const dropdownRef = useRef<HTMLDivElement>(null);
   const colormapRef = useRef<HTMLDivElement>(null);
 
+  // Get all target viewport IDs including stack2d if it exists
+  const getAllTargetVpIds = useCallback(() => {
+    const ids = [...viewportIds];
+    const engine = cornerstone.getRenderingEngine(renderingEngineId);
+    if (engine) {
+      try { if (engine.getViewport('stack2d')) ids.push('stack2d'); } catch {}
+    }
+    return ids;
+  }, [renderingEngineId, viewportIds]);
+
   const applyPreset = useCallback((preset: Preset) => {
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
     if (!engine) return;
 
-    // For MR: preset W/L values are relative proportions of data range (0-2000 scale)
-    // We need to map them to the actual data range of the volume
     const isMR = (mod === 'MR' || mod === 'MRI');
-    let dataMax = 2000; // default
+    let dataMax = 2000;
     if (isMR) {
       try {
         const volume = cornerstone.cache.getVolume('cornerstoneStreamingImageVolume:myVolume') as any;
@@ -75,54 +83,53 @@ export function WindowLevelPresets({ renderingEngineId, viewportIds, modality }:
       } catch { /* ignore */ }
     }
 
-    for (const vpId of viewportIds) {
+    for (const vpId of getAllTargetVpIds()) {
       const viewport = engine.getViewport(vpId);
       if (!viewport || viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
 
       let w = preset.window;
       let l = preset.level;
       if (isMR) {
-        // Scale preset values proportionally to actual data range
         const scale = dataMax / 2000;
         w = Math.round(preset.window * scale);
         l = Math.round(preset.level * scale);
       }
 
-      (viewport as cornerstone.Types.IVolumeViewport).setProperties({
+      (viewport as any).setProperties({
         voiRange: { lower: l - w / 2, upper: l + w / 2 },
       });
       viewport.render();
     }
     setActivePreset(preset.name);
     setIsOpen(false);
-  }, [renderingEngineId, viewportIds, mod]);
+  }, [renderingEngineId, mod, getAllTargetVpIds]);
 
   const applyColormap = useCallback((name: string) => {
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
     if (!engine) return;
-    for (const vpId of viewportIds) {
+    for (const vpId of getAllTargetVpIds()) {
       const viewport = engine.getViewport(vpId);
       if (!viewport || viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
       if (name === 'Grayscale') {
-        (viewport as cornerstone.Types.IVolumeViewport).setProperties({ colormap: undefined as any, invert: invertColors });
+        (viewport as any).setProperties({ colormap: undefined as any, invert: invertColors });
       } else {
-        (viewport as cornerstone.Types.IVolumeViewport).setProperties({ colormap: { name } as any, invert: false });
+        (viewport as any).setProperties({ colormap: { name } as any, invert: false });
       }
       viewport.render();
     }
     setActiveColormap(name);
     setShowColormap(false);
-  }, [renderingEngineId, viewportIds, invertColors]);
+  }, [renderingEngineId, invertColors, getAllTargetVpIds]);
 
   const toggleInvert = useCallback(() => {
     const next = !invertColors;
     setInvertColors(next);
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
     if (!engine) return;
-    for (const vpId of viewportIds) {
+    for (const vpId of getAllTargetVpIds()) {
       const viewport = engine.getViewport(vpId);
       if (!viewport || viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
-      (viewport as cornerstone.Types.IVolumeViewport).setProperties({ invert: next });
+      (viewport as any).setProperties({ invert: next });
       viewport.render();
     }
   }, [invertColors, renderingEngineId, viewportIds]);

@@ -194,6 +194,31 @@ export function setActiveTool(name: ToolName): void {
   mprToolGroup.setToolActive(names.StackScroll, {
     bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Wheel }],
   });
+
+  // Also update stackToolGroup if it exists (2D viewer mode)
+  try {
+    const stackGroup = cornerstoneTools.ToolGroupManager.getToolGroup('stackToolGroup');
+    if (stackGroup) {
+      // Supported tools in stack group
+      const stackTools = [names.WindowLevel, names.Pan, names.Zoom, names.Length, names.Angle, names.ArrowAnnotate];
+      for (const t of stackTools) {
+        try { stackGroup.setToolPassive(t); } catch {}
+      }
+      if (stackTools.includes(toolName)) {
+        stackGroup.setToolActive(toolName, {
+          bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Primary }],
+        });
+      }
+      // Keep Pan/Zoom/Scroll on secondary buttons
+      if (name !== 'Pan') {
+        try { stackGroup.setToolActive(names.Pan, { bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Auxiliary }] }); } catch {}
+      }
+      if (name !== 'Zoom') {
+        try { stackGroup.setToolActive(names.Zoom, { bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Secondary }] }); } catch {}
+      }
+      try { stackGroup.setToolActive(names.StackScroll, { bindings: [{ mouseButton: cornerstoneTools.Enums.MouseBindings.Wheel }] }); } catch {}
+    }
+  } catch {}
 }
 
 export function addViewportToToolGroup(_viewportId: string, _renderingEngineId: string): void {

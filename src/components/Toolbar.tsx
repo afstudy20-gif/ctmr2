@@ -19,9 +19,11 @@ const VOLUME_ID = 'cornerstoneStreamingImageVolume:myVolume';
 interface Props {
   renderingEngineId: string;
   onReset?: () => void;
+  onSwitchToMPR?: () => void;
+  isStack2D?: boolean;
 }
 
-export function Toolbar({ renderingEngineId, onReset }: Props) {
+export function Toolbar({ renderingEngineId, onReset, onSwitchToMPR, isStack2D }: Props) {
   const [activeTool, setActive] = useState<ToolName>('Crosshairs');
   const [mipEnabled, setMipEnabled] = useState(true);
   const [slabThickness, setSlabThickness] = useState(5);
@@ -96,6 +98,20 @@ export function Toolbar({ renderingEngineId, onReset }: Props) {
   const scrollViewport = useCallback((vpId: string, delta: number) => {
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
     if (!engine) return;
+
+    // Check if stack2d viewport exists (2D mode)
+    const stackVp = engine.getViewport('stack2d') as cornerstone.Types.IStackViewport | undefined;
+    if (stackVp && stackVp.type === cornerstone.Enums.ViewportType.STACK) {
+      const currentIdx = stackVp.getCurrentImageIdIndex();
+      const imageIds = (stackVp as any).getImageIds?.() || [];
+      const newIdx = Math.max(0, Math.min(imageIds.length - 1, currentIdx + delta));
+      if (newIdx !== currentIdx) {
+        stackVp.setImageIdIndex(newIdx);
+      }
+      return;
+    }
+
+    // Volume viewport scroll
     const vp = engine.getViewport(vpId) as cornerstone.Types.IVolumeViewport | undefined;
     if (!vp) return;
     const cam = vp.getCamera();
@@ -232,11 +248,22 @@ export function Toolbar({ renderingEngineId, onReset }: Props) {
       {/* Cine Player */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
         <select
-          value={cineVpId}
-          onChange={(e) => { setCineVpId(e.target.value); if (cineActive) { stopCine(); } }}
+          value={isStack2D ? 'stack2d' : cineVpId}
+          onChange={(e) => {
+            const val = e.target.value;
+            if (val !== 'stack2d' && isStack2D && onSwitchToMPR) {
+              // Switching from 2D to MPR mode
+              onSwitchToMPR();
+              setCineVpId(val);
+            } else {
+              setCineVpId(val);
+            }
+            if (cineActive) stopCine();
+          }}
           style={{ fontSize: '10px', padding: '2px 4px', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 3, height: 24 }}
-          title="Cine viewport"
+          title={isStack2D ? 'Select Ax/Sag/Cor to switch to MPR' : 'Cine viewport'}
         >
+          {isStack2D && <option value="stack2d">2D</option>}
           <option value="axial">Ax</option>
           <option value="sagittal">Sag</option>
           <option value="coronal">Cor</option>

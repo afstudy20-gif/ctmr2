@@ -3,7 +3,7 @@ import * as cornerstone from '@cornerstonejs/core';
 (window as any).__cornerstone = cornerstone;
 import { initCornerstone } from './core/initCornerstone';
 import { loadDicomFiles, createVolume, DicomSeriesInfo } from './core/dicomLoader';
-import { setupToolGroups, destroyToolGroups, resetCrosshairsToCenter, enterDoubleObliqueMode, exitDoubleObliqueMode } from './core/toolManager';
+import { setupToolGroups, destroyToolGroups, resetCrosshairsToCenter, enterDoubleObliqueMode, exitDoubleObliqueMode, setActiveTool } from './core/toolManager';
 import type { ViewportMode } from './components/ViewportGrid';
 import { Toolbar } from './components/Toolbar';
 import { DicomDropzone } from './components/DicomDropzone';
@@ -92,97 +92,7 @@ export default function App() {
     }, 100);
   }, [rightPanel, viewportMode]);
 
-  // Auto W/L: when scrolling, sample voxels around focal point to compute W/L
-  useEffect(() => {
-    if (!activeSeries) return;
-    const engine = renderingEngineRef.current;
-    if (!engine) return;
-
-    let lastFocalStr = '';
-
-    const autoWL = (vpId: string) => {
-      try {
-        const volume = cornerstone.cache.getVolume(VOLUME_ID) as any;
-        if (!volume?.imageData || !volume?.voxelManager) return;
-
-        const vp = engine.getViewport(vpId) as cornerstone.Types.IVolumeViewport | undefined;
-        if (!vp) return;
-        const cam = vp.getCamera();
-        if (!cam.focalPoint) return;
-
-        // Check if focal point actually changed
-        const focalStr = cam.focalPoint.map((v: number) => v.toFixed(1)).join(',');
-        if (focalStr === lastFocalStr) return;
-        lastFocalStr = focalStr;
-
-        const dims = volume.imageData.getDimensions();
-        const ijk = volume.imageData.worldToIndex(cam.focalPoint);
-        const ci = Math.round(ijk[0]);
-        const cj = Math.round(ijk[1]);
-        const ck = Math.round(ijk[2]);
-
-        // Determine scroll axis from view plane normal
-        const vpn = cam.viewPlaneNormal || [0, 0, 1];
-        const absVpn = [Math.abs(vpn[0]), Math.abs(vpn[1]), Math.abs(vpn[2])];
-        const scrollAxis = absVpn.indexOf(Math.max(...absVpn));
-
-        // Sample a grid of voxels on the current slice plane
-        const vm = volume.voxelManager;
-        const samples: number[] = [];
-        const step = 2; // sample every 2nd voxel for speed
-
-        if (scrollAxis === 2) {
-          // Axial: sample XY plane at z=ck
-          const k = Math.max(0, Math.min(dims[2] - 1, ck));
-          for (let j = 0; j < dims[1]; j += step) {
-            for (let i = 0; i < dims[0]; i += step) {
-              samples.push(vm.getAtIJK(i, j, k));
-            }
-          }
-        } else if (scrollAxis === 1) {
-          // Coronal: sample XZ plane at y=cj
-          const j = Math.max(0, Math.min(dims[1] - 1, cj));
-          for (let k = 0; k < dims[2]; k += step) {
-            for (let i = 0; i < dims[0]; i += step) {
-              samples.push(vm.getAtIJK(i, j, k));
-            }
-          }
-        } else {
-          // Sagittal: sample YZ plane at x=ci
-          const i = Math.max(0, Math.min(dims[0] - 1, ci));
-          for (let k = 0; k < dims[2]; k += step) {
-            for (let j = 0; j < dims[1]; j += step) {
-              samples.push(vm.getAtIJK(i, j, k));
-            }
-          }
-        }
-
-        if (samples.length < 10) return;
-
-        // Percentile W/L (5th-95th)
-        samples.sort((a, b) => a - b);
-        const p5 = samples[Math.floor(samples.length * 0.05)];
-        const p95 = samples[Math.floor(samples.length * 0.95)];
-        const ww = Math.max(1, p95 - p5);
-        const wl = (p95 + p5) / 2;
-
-        vp.setProperties({ voiRange: { lower: wl - ww / 2, upper: wl + ww / 2 } });
-        vp.render();
-      } catch { /* ignore */ }
-    };
-
-    // Listen for camera changes on all MPR viewports
-    const handlers: (() => void)[] = [];
-    for (const vpId of MPR_VIEWPORT_IDS) {
-      const el = document.getElementById(`viewport-${vpId}`);
-      if (!el) continue;
-      const h = () => setTimeout(() => autoWL(vpId), 30);
-      el.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED as any, h);
-      handlers.push(() => el.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED as any, h));
-    }
-
-    return () => handlers.forEach(h => h());
-  }, [activeSeries, viewportMode]);
+  // Auto W/L removed — user controls W/L via presets (1-9 keys) or mouse drag (W/L tool)
 
   // Arrow keys: scroll through slices on the last-clicked viewport
   useEffect(() => {
@@ -327,16 +237,37 @@ export default function App() {
       const vp = engine.getViewport('stack2d') as cornerstone.Types.IStackViewport;
       await vp.setStack(series.imageIds, Math.floor(series.imageIds.length / 2));
 
-      // Add to tool group for W/L, Pan, Zoom, scroll
+      // Create a separate tool group for the stack viewport (no Crosshairs!)
       try {
         const csTools = (window as any).cornerstoneTools;
-        const toolGroup = csTools.ToolGroupManager.getToolGroup('mprToolGroup');
-        if (toolGroup) {
-          try { toolGroup.addViewport('stack2d', RENDERING_ENGINE_ID); } catch {}
-        }
-      } catch {}
+        // Remove old stack tool group if exists
+        try { csTools.ToolGroupManager.destroyToolGroup('stackToolGroup'); } catch {}
+        const stackGroup = csTools.ToolGroupManager.createToolGroup('stackToolGroup');
+        if (stackGroup) {
+          stackGroup.addTool(csTools.WindowLevelTool.toolName);
+          stackGroup.addTool(csTools.PanTool.toolName);
+          stackGroup.addTool(csTools.ZoomTool.toolName);
+          stackGroup.addTool(csTools.StackScrollTool.toolName);
+          stackGroup.addTool(csTools.LengthTool.toolName);
+          stackGroup.addTool(csTools.AngleTool.toolName);
+          stackGroup.addTool(csTools.ArrowAnnotateTool.toolName);
+          stackGroup.addViewport('stack2d', RENDERING_ENGINE_ID);
 
-      setActiveTool('WindowLevel');
+          // W/L on primary, Pan on middle, Zoom on right, scroll on wheel
+          stackGroup.setToolActive(csTools.WindowLevelTool.toolName, {
+            bindings: [{ mouseButton: csTools.Enums.MouseBindings.Primary }],
+          });
+          stackGroup.setToolActive(csTools.PanTool.toolName, {
+            bindings: [{ mouseButton: csTools.Enums.MouseBindings.Auxiliary }],
+          });
+          stackGroup.setToolActive(csTools.ZoomTool.toolName, {
+            bindings: [{ mouseButton: csTools.Enums.MouseBindings.Secondary }],
+          });
+          stackGroup.setToolActive(csTools.StackScrollTool.toolName, {
+            bindings: [{ mouseButton: csTools.Enums.MouseBindings.Wheel }],
+          });
+        }
+      } catch (e) { console.warn('[2D] Tool group setup failed:', e); }
 
       engine.resize(true, false);
       vp.resetCamera();
@@ -359,8 +290,7 @@ export default function App() {
       if (stackVpEnabledRef.current) {
         try {
           const csTools = (window as any).cornerstoneTools;
-          const toolGroup = csTools.ToolGroupManager.getToolGroup('mprToolGroup');
-          if (toolGroup) try { toolGroup.removeViewports('stack2d'); } catch {}
+          try { csTools.ToolGroupManager.destroyToolGroup('stackToolGroup'); } catch {}
         } catch {}
         try { engine.disableElement('stack2d'); } catch {}
         stackVpEnabledRef.current = false;
@@ -595,7 +525,9 @@ export default function App() {
 
       {activeSeries && (
         <div className="toolbar-row">
-          <Toolbar renderingEngineId={RENDERING_ENGINE_ID} onReset={() => {
+          <Toolbar renderingEngineId={RENDERING_ENGINE_ID} isStack2D={viewportMode === 'stack-2d'}
+            onSwitchToMPR={() => { if (activeSeries) loadSeries(activeSeries); }}
+            onReset={() => {
             // Full baseline reset: exit TAVI mode, close panels, restore standard view
             taviPanelRef.current?.resetAll();
             exitDoubleObliqueMode(RENDERING_ENGINE_ID);
