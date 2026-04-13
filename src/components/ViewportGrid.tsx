@@ -120,9 +120,21 @@ export function ViewportGrid({ hide3d, mode = 'standard' }: Props) {
 
   return (
     <div className={gridClass}>
+      {/* Stack 2D viewport — separate element for native slice viewing */}
+      {mode === 'stack-2d' && (
+        <div className="viewport-container">
+          <div className="viewport-label">
+            <span className="viewport-label-dot viewport-label-dot--axial" />
+            2D VIEWER
+          </div>
+          <div id="viewport-stack2d" className="viewport" />
+        </div>
+      )}
+
+      {/* MPR + 3D viewports */}
       {allViewports.map((vp) => {
         const isVisible = visibleSet.has(vp.name) && !(hide3d && vp.name === '3d');
-        const isHidden = !isVisible || (expanded && expanded !== vp.name);
+        const isHidden = mode === 'stack-2d' || !isVisible || (expanded && expanded !== vp.name);
         return (
           <div
             key={vp.name}
@@ -142,7 +154,7 @@ export function ViewportGrid({ hide3d, mode = 'standard' }: Props) {
               </button>
             )}
             <div id={vp.id} className="viewport" />
-            {isVisible && (
+            {isVisible && mode !== 'stack-2d' && (
               <OrientationOverlay
                 viewportId={vp.csId}
                 renderingEngineId={RENDERING_ENGINE_ID}

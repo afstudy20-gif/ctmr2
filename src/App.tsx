@@ -283,6 +283,9 @@ export default function App() {
   );
 
   // Open series in 2D stack viewer (single viewport, scroll through slices)
+  // Track if stack viewport is enabled
+  const stackVpEnabledRef = useRef(false);
+
   const open2DViewer = useCallback(async (series: DicomSeriesInfo) => {
     const engine = renderingEngineRef.current;
     if (!engine) return;
@@ -290,58 +293,54 @@ export default function App() {
     setActiveSeries(series);
     setViewportMode('stack-2d');
     setRightPanel(null);
+    setIsLoading(true);
 
-    // Wait for layout to update
-    await new Promise(r => setTimeout(r, 200));
-    engine.resize(true, false);
+    // Wait for DOM to update (stack-2d element needs to be in DOM)
+    await new Promise(r => setTimeout(r, 300));
 
-    // Use axial viewport as a stack viewport by setting volume and scrolling
     try {
-      // Load volume if not already loaded
-      setIsLoading(true);
-      try { cornerstone.cache.removeVolumeLoadObject(VOLUME_ID); } catch {}
-      try { cornerstone.cache.purgeVolumeCache(); } catch {}
+      const stackEl = document.getElementById('viewport-stack2d');
+      if (!stackEl) throw new Error('Stack viewport element not found');
 
-      await createVolume(VOLUME_ID, series.imageIds, (loaded, total) => {
-        setLoadingProgress(`Loading: ${loaded}/${total}`);
-      });
-
-      await cornerstone.setVolumesForViewports(engine, [{ volumeId: VOLUME_ID }], ['axial']);
-
-      const vp = engine.getViewport('axial') as cornerstone.Types.IVolumeViewport | undefined;
-      if (vp) {
-        vp.setProperties({ interpolationType: cornerstone.Enums.InterpolationType.LINEAR });
-        // Disable MIP for 2D stack viewing
-        if ('setBlendMode' in vp) {
-          (vp as any).setBlendMode(cornerstone.Enums.BlendModes.COMPOSITE);
-          (vp as any).resetSlabThickness?.();
-        }
-        vp.resetCamera();
-        vp.render();
+      // Enable a StackViewport on the stack2d element
+      // First disable if already enabled
+      if (stackVpEnabledRef.current) {
+        try { engine.disableElement('stack2d'); } catch {}
       }
 
-      // In 2D mode: set W/L as primary tool, disable crosshairs
+      engine.enableElement({
+        viewportId: 'stack2d',
+        type: cornerstone.Enums.ViewportType.STACK,
+        element: stackEl,
+      });
+      stackVpEnabledRef.current = true;
+
+      // Pre-load all images for smooth scrolling
+      setLoadingProgress(`Loading ${series.imageIds.length} images...`);
+      await Promise.all(
+        series.imageIds.map(id =>
+          cornerstone.imageLoader.loadAndCacheImage(id).catch(() => null)
+        )
+      );
+
+      // Set the image stack on the viewport
+      const vp = engine.getViewport('stack2d') as cornerstone.Types.IStackViewport;
+      await vp.setStack(series.imageIds, Math.floor(series.imageIds.length / 2));
+
+      // Add to tool group for W/L, Pan, Zoom, scroll
+      try {
+        const csTools = (window as any).cornerstoneTools;
+        const toolGroup = csTools.ToolGroupManager.getToolGroup('mprToolGroup');
+        if (toolGroup) {
+          try { toolGroup.addViewport('stack2d', RENDERING_ENGINE_ID); } catch {}
+        }
+      } catch {}
+
       setActiveTool('WindowLevel');
 
-      // Set orientation to match the acquisition plane
-      // (for coronal series, show coronal; for sagittal, show sagittal)
-      const desc = series.seriesDescription?.toUpperCase() || '';
-      if (desc.includes('COR')) {
-        // Coronal acquisition — show as coronal
-        const vpC = engine.getViewport('axial') as any;
-        if (vpC?.setOrientation) {
-          vpC.setOrientation(cornerstone.Enums.OrientationAxis.CORONAL);
-          vpC.resetCamera();
-          vpC.render();
-        }
-      } else if (desc.includes('SAG')) {
-        const vpS = engine.getViewport('axial') as any;
-        if (vpS?.setOrientation) {
-          vpS.setOrientation(cornerstone.Enums.OrientationAxis.SAGITTAL);
-          vpS.resetCamera();
-          vpS.render();
-        }
-      }
+      engine.resize(true, false);
+      vp.resetCamera();
+      vp.render();
     } catch (err: any) {
       setError(`Failed to open 2D viewer: ${err.message}`);
     } finally {
@@ -354,8 +353,19 @@ export default function App() {
     if (!engine) return;
 
     setActiveSeries(series);
-    // If in 2D mode, switch back to MPR
-    if (viewportMode === 'stack-2d') setViewportMode('standard');
+    // If in 2D mode, switch back to MPR and disable stack viewport
+    if (viewportMode === 'stack-2d') {
+      setViewportMode('standard');
+      if (stackVpEnabledRef.current) {
+        try {
+          const csTools = (window as any).cornerstoneTools;
+          const toolGroup = csTools.ToolGroupManager.getToolGroup('mprToolGroup');
+          if (toolGroup) try { toolGroup.removeViewports('stack2d'); } catch {}
+        } catch {}
+        try { engine.disableElement('stack2d'); } catch {}
+        stackVpEnabledRef.current = false;
+      }
+    }
     setIsLoading(true);
     setVolumeResults([]);
 
