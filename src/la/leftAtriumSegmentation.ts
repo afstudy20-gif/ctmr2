@@ -38,8 +38,18 @@ export async function segmentLeftAtrium(
   const stride = dx * dy;
   const total = dx * dy * dz;
 
-  const scalars = imageData.getPointData().getScalars();
-  const getHU = (idx: number): number => scalars.getTuple(idx)?.[0] ?? -1024;
+  // Prefer voxel manager (always populated) over vtk scalars (may be null mid-stream)
+  const scalarArray: ArrayLike<number> | null =
+    (sourceVolume as any).voxelManager?.getCompleteScalarDataArray?.() ?? null;
+  const scalars = imageData.getPointData()?.getScalars?.();
+  const getHU = (idx: number): number => {
+    if (scalarArray) return scalarArray[idx] ?? -1024;
+    const tup = scalars?.getTuple?.(idx);
+    return tup?.[0] ?? -1024;
+  };
+  if (!scalarArray && !scalars) {
+    throw new Error('Volume scalar data not available yet. Wait for load to finish.');
+  }
 
   const [si, sj, sk] = params.seedIJK;
   if (si < 0 || si >= dx || sj < 0 || sj >= dy || sk < 0 || sk >= dz) return null;

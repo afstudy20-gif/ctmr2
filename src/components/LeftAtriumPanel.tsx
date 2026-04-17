@@ -6,7 +6,7 @@ import {
   materializeLabelmap,
   worldToIJK,
 } from '../la/leftAtriumSegmentation';
-import { trimThinBranches, cutAtPlane, countVoxels } from '../la/morphology';
+import { trimThinBranches, cutAtPlane, countVoxels, paintSphere } from '../la/morphology';
 import { marchingCubesBinary } from '../la/marchingCubes';
 import { meshToBinarySTL, downloadBlob } from '../la/stlExport';
 
@@ -19,8 +19,12 @@ const LA_SEGMENTATION_ID = 'leftAtriumSegmentation';
 const MPR_VIEWPORT_IDS = ['axial', 'sagittal', 'coronal'];
 const ALL_VIEWPORT_IDS = ['axial', 'sagittal', 'coronal', 'volume3d'];
 
-const DEFAULT_MIN_HU = 200;
-const DEFAULT_MAX_HU = 700;
+// Blood-pool-only range. Trabecular bone starts ~150 HU and cortical bone >500,
+// so a narrow band centered on peak iodinated contrast (≈300–400 HU) limits
+// flood-fill leakage into spine/ribs even when seed is placed near vertebra.
+const DEFAULT_MIN_HU = 280;
+const DEFAULT_MAX_HU = 450;
+const LA_VOXEL_CAP = 1_200_000; // LA typical volume ≈100–200 mL → ≤1M voxels at 1mm isotropic
 
 interface LAState {
   data: Uint8Array;
@@ -37,7 +41,9 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
   const [seedWorld, setSeedWorld] = useState<number[] | null>(null);
   const [seedHU, setSeedHU] = useState<number | null>(null);
   const [seedMode, setSeedMode] = useState(false);
-  const [trimRadius, setTrimRadius] = useState(3);
+  const [trimRadiusMm, setTrimRadiusMm] = useState(6);
+  const [editMode, setEditMode] = useState<'off' | 'paint' | 'erase'>('off');
+  const [brushRadiusMm, setBrushRadiusMm] = useState(3);
   const [mvMode, setMvMode] = useState(false);
   const [mvPoints, setMvPoints] = useState<Array<[number, number, number]>>([]);
   const [running, setRunning] = useState(false);
@@ -71,9 +77,26 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
     engine?.renderViewports(ALL_VIEWPORT_IDS);
   }, [renderingEngineId]);
 
-  // Attach labelmap representation to all viewports
+  // Attach labelmap representation — called only once per new labelmap volume
   const attachRepresentation = useCallback(async (labelmapVolumeId: string) => {
     const { segmentation, Enums: ToolsEnums } = cornerstoneTools;
+    const engine = cornerstone.getRenderingEngine(renderingEngineId);
+
+    // Save MPR camera state + crosshair tool center — segmentation add triggers
+    // crosshair tool to recompute center to volume center (abdomen-level jump).
+    const savedCams: Record<string, any> = {};
+    if (engine) {
+      for (const vpId of MPR_VIEWPORT_IDS) {
+        const vp = engine.getViewport(vpId);
+        if (vp) savedCams[vpId] = vp.getCamera();
+      }
+    }
+    const toolGroup = cornerstoneTools.ToolGroupManager.getToolGroup('mprToolGroup');
+    const csToolName = (cornerstoneTools as any).CrosshairsTool?.toolName || 'Crosshairs';
+    const csTool = toolGroup?.getToolInstance(csToolName) as any;
+    const savedToolCenter: number[] | null =
+      csTool?.toolCenter && csTool.toolCenter.length === 3 ? [...csTool.toolCenter] : null;
+
     try { segmentation.removeSegmentation(LA_SEGMENTATION_ID); } catch { /* ignore */ }
     segmentation.addSegmentations([
       {
@@ -89,67 +112,144 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
       await segmentation.addLabelmapRepresentationToViewport(vpId, [
         {
           segmentationId: LA_SEGMENTATION_ID,
-          config: {
-            colorLUTOrIndex: [[0, 0, 0, 0], laColor] as any,
-          },
+          config: { colorLUTOrIndex: [[0, 0, 0, 0], laColor] as any },
         },
       ]);
     }
-    try {
-      await segmentation.addLabelmapRepresentationToViewport('volume3d', [
-        {
-          segmentationId: LA_SEGMENTATION_ID,
-          config: {
-            colorLUTOrIndex: [[0, 0, 0, 0], [220, 60, 60, 255]] as any,
-          },
-        },
-      ]);
-    } catch { /* 3D repr may not be supported */ }
-    const engine = cornerstone.getRenderingEngine(renderingEngineId);
-    engine?.renderViewports(ALL_VIEWPORT_IDS);
+
+    if (engine) {
+      // Restore MPR cameras + crosshair tool center + annotation handles
+      for (const vpId of MPR_VIEWPORT_IDS) {
+        const vp = engine.getViewport(vpId);
+        if (vp && savedCams[vpId]) vp.setCamera(savedCams[vpId]);
+      }
+      if (csTool && savedToolCenter) {
+        csTool.toolCenter = [...savedToolCenter];
+        for (const vpId of MPR_VIEWPORT_IDS) {
+          const vp = engine.getViewport(vpId);
+          if (!vp?.element) continue;
+          try {
+            const anns = cornerstoneTools.annotation.state.getAnnotations(csToolName, vp.element);
+            if (anns) for (const a of anns) {
+              if (a.data?.handles) a.data.handles.toolCenter = [...savedToolCenter] as any;
+            }
+          } catch { /* ignore */ }
+        }
+        if (typeof csTool.computeToolCenter === 'function') {
+          try { csTool.computeToolCenter(); } catch { /* ignore */ }
+        }
+      }
+      engine.renderViewports(MPR_VIEWPORT_IDS);
+    }
   }, [renderingEngineId]);
 
-  // Replace in-memory labelmap with modified data + re-render
+  // Mutate the existing labelmap volume in-place, then re-render.
+  // Avoids creating a new volume on every op (was the main cause of freezes
+  // and actor-remove warnings).
   const applyData = useCallback(async (newData: Uint8Array) => {
     const cur = laStateRef.current;
     if (!cur) return;
-    // Remove prior labelmap volume from cache
-    if (cur.labelmapVolumeId) {
-      try { cornerstone.cache.removeVolumeLoadObject(cur.labelmapVolumeId); } catch { /* ignore */ }
-    }
-    const newId = materializeLabelmap(volumeId, newData);
-    if (!newId) {
-      setError('Failed to materialize labelmap volume.');
+    const lm = cornerstone.cache.getVolume(cur.labelmapVolumeId);
+    const lmArr = (lm as any)?.voxelManager?.getCompleteScalarDataArray?.();
+    if (lm && lmArr) {
+      for (let i = 0; i < newData.length; i++) (lmArr as any)[i] = newData[i];
+      (lm as any).voxelManager?.setCompleteScalarDataArray?.(lmArr);
+      (lm as any).imageData?.modified?.();
+    } else {
+      // Fallback: volume gone — re-materialize (rare)
+      const newId = materializeLabelmap(volumeId, newData);
+      if (!newId) {
+        setError('Failed to materialize labelmap volume.');
+        return;
+      }
+      laStateRef.current = { ...cur, data: newData, labelmapVolumeId: newId };
+      await attachRepresentation(newId);
+      const nv0 = countVoxels(newData);
+      setVoxelCount(nv0);
+      setVolumeCm3((nv0 * cur.voxelVolumeMm3) / 1000);
       return;
     }
-    laStateRef.current = { ...cur, data: newData, labelmapVolumeId: newId };
-    await attachRepresentation(newId);
+    laStateRef.current = { ...cur, data: newData };
+    const engine = cornerstone.getRenderingEngine(renderingEngineId);
+    engine?.renderViewports(MPR_VIEWPORT_IDS);
     const nv = countVoxels(newData);
     setVoxelCount(nv);
     setVolumeCm3((nv * cur.voxelVolumeMm3) / 1000);
-  }, [volumeId, attachRepresentation]);
+  }, [volumeId, renderingEngineId, attachRepresentation]);
 
   // Seed placement: overlay a transparent div over each MPR viewport so the
   // click doesn't get swallowed by Cornerstone Tools (which binds mousedown
   // in capture phase). Overlay sits above with higher z-index, pointer-events:auto.
   useEffect(() => {
-    if (!seedMode && !mvMode) return;
+    if (!seedMode && !mvMode && editMode === 'off') return;
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
     if (!engine) return;
 
     const cleanups: Array<() => void> = [];
+    const elementIdMap: Record<string, string> = {
+      axial: 'viewport-axial',
+      sagittal: 'viewport-sagittal',
+      coronal: 'viewport-coronal',
+    };
+
     for (const vpId of MPR_VIEWPORT_IDS) {
       const vp = engine.getViewport(vpId);
-      if (!vp?.element) continue;
-      const el = vp.element as HTMLElement;
+      if (!vp) continue;
+      // Prefer DOM container by id (most robust) — fall back to vp.element
+      const el = (document.getElementById(elementIdMap[vpId]) as HTMLElement | null)
+        ?? (vp.element as HTMLElement);
+      if (!el) continue;
 
       const overlay = document.createElement('div');
       overlay.style.cssText = `
-        position:absolute; inset:0; z-index:1000;
-        cursor:crosshair; background:transparent;
+        position:absolute; inset:0; z-index:9999;
+        cursor:crosshair; background:rgba(255,60,60,0.04);
+        outline:2px dashed rgba(255,60,60,0.6); outline-offset:-2px;
         pointer-events:auto;
       `;
       overlay.dataset.laPicker = '1';
+      overlay.title = seedMode
+        ? 'Click to place LA seed'
+        : mvMode
+          ? 'Click to add MV plane point'
+          : editMode === 'paint'
+            ? 'Drag to paint LA voxels'
+            : 'Drag to erase LA voxels';
+
+      let dragging = false;
+      const paintAt = (clientX: number, clientY: number) => {
+        const cur = laStateRef.current;
+        if (!cur) return;
+        const rect = el.getBoundingClientRect();
+        const cx = clientX - rect.left;
+        const cy = clientY - rect.top;
+        const world = (vp as any).canvasToWorld?.([cx, cy]);
+        if (!world) return;
+        const volume = cornerstone.cache.getVolume(volumeId);
+        if (!volume?.imageData) return;
+        const ijkFloat = volume.imageData.worldToIndex(world);
+        const ci = Math.round(ijkFloat[0]);
+        const cj = Math.round(ijkFloat[1]);
+        const ck = Math.round(ijkFloat[2]);
+        const spacing = volume.imageData.getSpacing();
+        const minSpacing = Math.min(spacing[0], spacing[1], spacing[2]);
+        const radiusVox = Math.max(1, Math.round(brushRadiusMm / minSpacing));
+        paintSphere(cur.data, cur.dims, ci, cj, ck, radiusVox, editMode === 'paint' ? 1 : 0);
+      };
+
+      const endDrag = async () => {
+        if (!dragging) return;
+        dragging = false;
+        const cur = laStateRef.current;
+        if (!cur) return;
+        // Materialize updated labelmap
+        await applyData(cur.data);
+      };
+
+      const onMouseMove = (e: MouseEvent) => {
+        if (!dragging) return;
+        paintAt(e.clientX, e.clientY);
+      };
 
       const handler = (e: MouseEvent) => {
         if (e.button !== 0) return;
@@ -161,18 +261,37 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
         const world = (vp as any).canvasToWorld?.([cx, cy]);
         if (!world) return;
 
+        if (editMode !== 'off') {
+          dragging = true;
+          paintAt(e.clientX, e.clientY);
+          return;
+        }
+
         if (seedMode) {
-          const volume = cornerstone.cache.getVolume(volumeId);
-          if (!volume?.imageData) return;
-          const ijkFloat = volume.imageData.worldToIndex(world);
-          const dims = volume.imageData.getDimensions();
-          const i = Math.round(ijkFloat[0]);
-          const j = Math.round(ijkFloat[1]);
-          const k = Math.round(ijkFloat[2]);
-          if (i < 0 || i >= dims[0] || j < 0 || j >= dims[1] || k < 0 || k >= dims[2]) return;
-          const hu = volume.imageData.getPointData().getScalars()
-            .getTuple(k * dims[0] * dims[1] + j * dims[0] + i)?.[0] ?? null;
           setSeedWorld([world[0], world[1], world[2]]);
+          let hu: number | null = null;
+          try {
+            const volume = cornerstone.cache.getVolume(volumeId);
+            if (volume?.imageData) {
+              const ijkFloat = volume.imageData.worldToIndex(world);
+              const dims = volume.imageData.getDimensions();
+              const i = Math.round(ijkFloat[0]);
+              const j = Math.round(ijkFloat[1]);
+              const k = Math.round(ijkFloat[2]);
+              if (i >= 0 && i < dims[0] && j >= 0 && j < dims[1] && k >= 0 && k < dims[2]) {
+                const flatIdx = k * dims[0] * dims[1] + j * dims[0] + i;
+                // Prefer voxelManager — reliable during streaming; fall back to vtk scalars
+                const scalarArray = (volume as any).voxelManager?.getCompleteScalarDataArray?.();
+                if (scalarArray) {
+                  hu = scalarArray[flatIdx] ?? null;
+                } else {
+                  const scalars = volume.imageData.getPointData()?.getScalars?.();
+                  const tup = scalars?.getTuple?.(flatIdx);
+                  hu = tup?.[0] ?? null;
+                }
+              }
+            }
+          } catch { /* HU sampling best-effort */ }
           setSeedHU(hu);
           setSeedMode(false);
           setError(null);
@@ -190,17 +309,23 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
       if (!prevPos || prevPos === 'static') el.style.position = 'relative';
 
       overlay.addEventListener('mousedown', handler);
+      overlay.addEventListener('mousemove', onMouseMove);
+      overlay.addEventListener('mouseup', endDrag);
+      overlay.addEventListener('mouseleave', endDrag);
       overlay.addEventListener('contextmenu', (e) => e.preventDefault());
       el.appendChild(overlay);
 
       cleanups.push(() => {
         overlay.removeEventListener('mousedown', handler);
+        overlay.removeEventListener('mousemove', onMouseMove);
+        overlay.removeEventListener('mouseup', endDrag);
+        overlay.removeEventListener('mouseleave', endDrag);
         if (overlay.parentElement === el) el.removeChild(overlay);
         if (!prevPos || prevPos === 'static') el.style.position = prevPos;
       });
     }
     return () => cleanups.forEach((fn) => fn());
-  }, [seedMode, mvMode, renderingEngineId, volumeId]);
+  }, [seedMode, mvMode, editMode, brushRadiusMm, renderingEngineId, volumeId, applyData]);
 
   const runReconstruction = useCallback(async () => {
     setError(null);
@@ -220,7 +345,7 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
       clearSegmentation();
       await new Promise((r) => setTimeout(r, 20));
 
-      const res = await segmentLeftAtrium(volumeId, { minHU, maxHU, seedIJK });
+      const res = await segmentLeftAtrium(volumeId, { minHU, maxHU, seedIJK, maxVoxels: LA_VOXEL_CAP });
       if (!res) {
         setError('Segmentation failed: volume unavailable.');
         return;
@@ -255,15 +380,21 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
     setRunning(true);
     try {
       await new Promise((r) => setTimeout(r, 20));
-      const trimmed = trimThinBranches(cur.data, cur.dims, trimRadius);
+      // Convert mm radius to voxel iterations using min spacing — erosion is
+      // 6-connected and iterated, producing an approximate ball of N voxels.
+      const volume = cornerstone.cache.getVolume(volumeId);
+      const spacing = volume?.imageData?.getSpacing?.() || [1, 1, 1];
+      const minSpacing = Math.min(spacing[0], spacing[1], spacing[2]);
+      const radiusVox = Math.max(1, Math.round(trimRadiusMm / minSpacing));
+      const trimmed = trimThinBranches(cur.data, cur.dims, radiusVox);
       await applyData(trimmed);
-      setStatusMsg(`Trimmed thin branches at radius ${trimRadius} voxels.`);
+      setStatusMsg(`Trimmed at ${trimRadiusMm} mm (${radiusVox} vox/axis, min spacing ${minSpacing.toFixed(2)} mm).`);
     } catch (err: any) {
       setError(err?.message || 'Trim failed.');
     } finally {
       setRunning(false);
     }
-  }, [trimRadius, applyData]);
+  }, [trimRadiusMm, applyData, volumeId]);
 
   const runMVCut = useCallback(async () => {
     const cur = laStateRef.current;
@@ -352,6 +483,10 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
 
       <div className="la-section">
         <h4>1. Place Seed</h4>
+        <p className="la-hint">
+          Scroll axial to the mid-chest slice where LA contrast chamber appears as a bright oval behind LV.
+          Click near its center. Seed HU should read ≈300–400.
+        </p>
         <button
           className={`la-btn ${seedMode ? 'active' : ''}`}
           onClick={() => { setSeedMode((v) => !v); setMvMode(false); }}
@@ -362,7 +497,20 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
         {seedWorld && (
           <div className="la-seed-info">
             <div>World: [{seedWorld.map((v) => v.toFixed(1)).join(', ')}]</div>
-            {seedHU !== null && <div>HU at seed: {Math.round(seedHU)}</div>}
+            {seedHU !== null ? (
+              <div>
+                HU at seed: <strong>{Math.round(seedHU)}</strong>
+                {(seedHU < 250 || seedHU > 500) && (
+                  <span style={{ color: '#ffb0b0', marginLeft: 6 }}>
+                    ⚠ outside blood-pool range — re-pick inside contrast-enhanced LA
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div style={{ color: '#ffc080' }}>
+                HU sample unavailable (volume streaming). Wait for load then re-pick.
+              </div>
+            )}
             <button className="la-btn la-btn-secondary" onClick={resetSeed} disabled={running}>
               Clear Seed
             </button>
@@ -395,9 +543,9 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
             onClick={() => { setMinHU(DEFAULT_MIN_HU); setMaxHU(DEFAULT_MAX_HU); }}
             disabled={running}>Reset defaults</button>
           <button className="la-btn la-btn-secondary"
-            onClick={() => { setMinHU(150); setMaxHU(500); }} disabled={running}>Loose</button>
+            onClick={() => { setMinHU(220); setMaxHU(500); }} disabled={running}>Loose</button>
           <button className="la-btn la-btn-secondary"
-            onClick={() => { setMinHU(280); setMaxHU(600); }} disabled={running}>Tight</button>
+            onClick={() => { setMinHU(320); setMaxHU(420); }} disabled={running}>Tight</button>
         </div>
       </div>
 
@@ -427,15 +575,52 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
             </p>
             <div className="la-range-inputs">
               <label>
-                Radius (vox)
-                <input type="number" min={1} max={10} value={trimRadius}
-                  onChange={(e) => setTrimRadius(Math.max(1, Math.min(10, Number(e.target.value))))}
+                Radius (mm)
+                <input type="number" min={0.5} max={20} step={0.5} value={trimRadiusMm}
+                  onChange={(e) => setTrimRadiusMm(Math.max(0.5, Math.min(20, Number(e.target.value))))}
                   disabled={running} />
               </label>
             </div>
+            <p className="la-hint">
+              True ball erosion (chamfer DT). PVs prune ~4–6 mm.
+              LA/LV separation needs ~12 mm (MV orifice ≈25 mm).
+              For aorta removal prefer step 5 (MV plane).
+            </p>
             <button className="la-btn" onClick={runTrimVeins} disabled={running}>
               Trim Veins
             </button>
+          </div>
+
+          <div className="la-section">
+            <h4>4b. Manual Edit (Brush)</h4>
+            <p className="la-hint">
+              Paint adds voxels, erase removes. Drag over MPRs. Brush is a 3D sphere.
+            </p>
+            <div className="la-preset-row">
+              <button
+                className={`la-btn ${editMode === 'paint' ? 'active' : ''}`}
+                onClick={() => { setEditMode((m) => (m === 'paint' ? 'off' : 'paint')); setSeedMode(false); setMvMode(false); }}
+                disabled={running}
+              >Paint</button>
+              <button
+                className={`la-btn ${editMode === 'erase' ? 'active' : ''}`}
+                onClick={() => { setEditMode((m) => (m === 'erase' ? 'off' : 'erase')); setSeedMode(false); setMvMode(false); }}
+                disabled={running}
+              >Erase</button>
+              <button
+                className="la-btn la-btn-secondary"
+                onClick={() => setEditMode('off')}
+                disabled={running || editMode === 'off'}
+              >Stop</button>
+            </div>
+            <div className="la-range-inputs">
+              <label>
+                Brush Ø (mm)
+                <input type="number" min={0.5} max={30} step={0.5} value={brushRadiusMm}
+                  onChange={(e) => setBrushRadiusMm(Math.max(0.5, Math.min(30, Number(e.target.value))))}
+                  disabled={running} />
+              </label>
+            </div>
           </div>
 
           <div className="la-section">
