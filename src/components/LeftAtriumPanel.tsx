@@ -129,7 +129,9 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
     setVolumeCm3((nv * cur.voxelVolumeMm3) / 1000);
   }, [volumeId, attachRepresentation]);
 
-  // Seed placement (click on MPR)
+  // Seed placement: overlay a transparent div over each MPR viewport so the
+  // click doesn't get swallowed by Cornerstone Tools (which binds mousedown
+  // in capture phase). Overlay sits above with higher z-index, pointer-events:auto.
   useEffect(() => {
     if (!seedMode && !mvMode) return;
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
@@ -139,7 +141,15 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
     for (const vpId of MPR_VIEWPORT_IDS) {
       const vp = engine.getViewport(vpId);
       if (!vp?.element) continue;
-      const el = vp.element;
+      const el = vp.element as HTMLElement;
+
+      const overlay = document.createElement('div');
+      overlay.style.cssText = `
+        position:absolute; inset:0; z-index:1000;
+        cursor:crosshair; background:transparent;
+        pointer-events:auto;
+      `;
+      overlay.dataset.laPicker = '1';
 
       const handler = (e: MouseEvent) => {
         if (e.button !== 0) return;
@@ -162,7 +172,7 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
           if (i < 0 || i >= dims[0] || j < 0 || j >= dims[1] || k < 0 || k >= dims[2]) return;
           const hu = volume.imageData.getPointData().getScalars()
             .getTuple(k * dims[0] * dims[1] + j * dims[0] + i)?.[0] ?? null;
-          setSeedWorld(world);
+          setSeedWorld([world[0], world[1], world[2]]);
           setSeedHU(hu);
           setSeedMode(false);
           setError(null);
@@ -175,8 +185,19 @@ export function LeftAtriumPanel({ renderingEngineId, volumeId }: Props) {
         }
       };
 
-      el.addEventListener('mousedown', handler, true);
-      cleanups.push(() => el.removeEventListener('mousedown', handler, true));
+      // Ensure element is positioned for absolute overlay
+      const prevPos = el.style.position;
+      if (!prevPos || prevPos === 'static') el.style.position = 'relative';
+
+      overlay.addEventListener('mousedown', handler);
+      overlay.addEventListener('contextmenu', (e) => e.preventDefault());
+      el.appendChild(overlay);
+
+      cleanups.push(() => {
+        overlay.removeEventListener('mousedown', handler);
+        if (overlay.parentElement === el) el.removeChild(overlay);
+        if (!prevPos || prevPos === 'static') el.style.position = prevPos;
+      });
     }
     return () => cleanups.forEach((fn) => fn());
   }, [seedMode, mvMode, renderingEngineId, volumeId]);
