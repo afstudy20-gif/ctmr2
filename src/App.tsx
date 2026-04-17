@@ -19,13 +19,14 @@ import { ViewAnglePresets } from './components/ViewAnglePresets';
 import { HUProbeOverlay } from './components/HUProbeOverlay';
 import { DicomInfoOverlay } from './components/DicomInfoOverlay';
 import { HandMRPanel, HandMRPanelHandle } from './components/HandMRPanel';
+import { LeftAtriumPanel } from './components/LeftAtriumPanel';
 
 const RENDERING_ENGINE_ID = 'myRenderingEngine';
 const VOLUME_ID = 'cornerstoneStreamingImageVolume:myVolume';
 const VIEWPORT_IDS = ['axial', 'sagittal', 'coronal', 'volume3d'];
 const MPR_VIEWPORT_IDS = ['axial', 'sagittal', 'coronal'];
 
-type RightPanel = null | '3d' | 'tavi' | 'hand-mr';
+type RightPanel = null | '3d' | 'tavi' | 'hand-mr' | 'la';
 
 interface VolumeResult {
   name: string;
@@ -573,6 +574,18 @@ export default function App() {
           }}>3D</button>
           <button className={`toolbar-btn ${rightPanel === 'tavi' ? 'active' : ''}`} onClick={() => toggleRightPanel('tavi')}>TAVI</button>
           <button className={`toolbar-btn ${rightPanel === 'hand-mr' ? 'active' : ''}`} onClick={() => toggleRightPanel('hand-mr')}>Hand MR</button>
+          <button className={`toolbar-btn ${rightPanel === 'la' ? 'active' : ''}`} onClick={() => {
+            setRightPanel((prev) => {
+              const next = prev === 'la' ? null : 'la';
+              // Keep standard viewport mode (MPR + 3D visible)
+              if (next === 'la' && viewportMode !== 'standard') {
+                setViewportMode('standard');
+                exitDoubleObliqueMode(RENDERING_ENGINE_ID);
+              }
+              resizeViewports();
+              return next;
+            });
+          }}>LA 3D</button>
         </div>
       )}
 
@@ -663,6 +676,21 @@ export default function App() {
                   volumeId={VOLUME_ID}
                   seriesList={seriesList}
                   onLoadSeries={loadSeries}
+                />
+              </div>
+            </div>
+          )}
+
+          {rightPanel === 'la' && (
+            <div className="side-panel" style={{ width: '360px' }}>
+              <div className="side-panel-tabs">
+                <button className="side-panel-tab active">Left Atrium 3D</button>
+                <button className="side-panel-close" onClick={() => { setRightPanel(null); resizeViewports(); }}>×</button>
+              </div>
+              <div className="side-panel-body" style={{ padding: 0 }}>
+                <LeftAtriumPanel
+                  renderingEngineId={RENDERING_ENGINE_ID}
+                  volumeId={VOLUME_ID}
                 />
               </div>
             </div>

@@ -110,12 +110,35 @@ export function WindowLevelPresets({ renderingEngineId, viewportIds, modality }:
     for (const vpId of getAllTargetVpIds()) {
       const viewport = engine.getViewport(vpId);
       if (!viewport || viewport.type === cornerstone.Enums.ViewportType.VOLUME_3D) continue;
-      if (name === 'Grayscale') {
-        (viewport as any).setProperties({ colormap: undefined as any, invert: invertColors });
-      } else {
-        (viewport as any).setProperties({ colormap: { name } as any, invert: false });
-      }
-      viewport.render();
+      try {
+        if (name === 'Grayscale') {
+          // Remove colormap — try multiple approaches
+          const vp = viewport as any;
+          if (vp.setColormap) {
+            vp.setColormap(undefined);
+          }
+          // Also reset via the actor's color transfer function
+          try {
+            const actor = vp.getDefaultActor?.()?.actor;
+            if (actor) {
+              const property = actor.getProperty?.();
+              if (property) {
+                const cfun = property.getRGBTransferFunction?.(0);
+                if (cfun) {
+                  cfun.removeAllPoints();
+                  cfun.addRGBPoint(0, 0, 0, 0);
+                  cfun.addRGBPoint(1, 1, 1, 1);
+                  property.modified();
+                }
+              }
+            }
+          } catch {}
+          vp.setProperties({ invert: invertColors });
+        } else {
+          (viewport as any).setProperties({ colormap: { name } as any });
+        }
+        viewport.render();
+      } catch { /* ignore */ }
     }
     setActiveColormap(name);
     setShowColormap(false);

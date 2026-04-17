@@ -88,8 +88,13 @@ export function Toolbar({ renderingEngineId, onReset, onSwitchToMPR, isStack2D }
     const engine = cornerstone.getRenderingEngine(renderingEngineId);
     if (!engine) return;
     for (const vpId of ['axial', 'sagittal', 'coronal', 'volume3d']) {
-      const vp = engine.getViewport(vpId);
-      if (vp) { vp.resetCamera(); vp.render(); }
+      const vp = engine.getViewport(vpId) as any;
+      if (!vp) continue;
+      // Reset colormap
+      try { if (vp.setColormap) vp.setColormap(undefined); } catch {}
+      try { vp.setProperties({ invert: false }); } catch {}
+      vp.resetCamera();
+      vp.render();
     }
     setTimeout(() => resetCrosshairsToCenter(renderingEngineId), 100);
   }, [renderingEngineId, onReset, applyMip]);

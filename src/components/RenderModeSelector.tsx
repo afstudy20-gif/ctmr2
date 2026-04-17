@@ -136,11 +136,13 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
     // Re-apply current shading after preset change
     setTimeout(() => {
       applyShading(ambient, diffuse, specular, specularPower);
-      // Re-apply tissue visibility if any layer is hidden
-      const hasHidden = Object.values(tissueVisibility).some(v => !v) ||
-                        !tissueVisibility['air'] || !tissueVisibility['fat'];
-      if (hasHidden && newMode !== 'mip') {
-        applyTissueVisibility(tissueVisibility);
+      // Re-apply tissue visibility ONLY if HU crop is not active
+      if (!huCropEnabled) {
+        const hasHidden = Object.values(tissueVisibility).some(v => !v) ||
+                          !tissueVisibility['air'] || !tissueVisibility['fat'];
+        if (hasHidden && newMode !== 'mip') {
+          applyTissueVisibility(tissueVisibility);
+        }
       }
     }, 50);
   };
@@ -190,13 +192,6 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
     const viewport = getViewport3d();
     if (!viewport) return;
     try {
-      const actor = viewport.getDefaultActor()?.actor;
-      if (!actor) return;
-      const property = (actor as any).getProperty?.();
-      if (!property) return;
-      const ofun = property.getScalarOpacity?.(0);
-      if (!ofun) return;
-
       // Evaluate a layer's opacity at a given HU via linear interpolation
       const evalLayer = (points: [number, number][], hu: number): number => {
         if (hu <= points[0][0]) return points[0][1];
@@ -223,8 +218,8 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
       }
       const sortedHU = Array.from(huSet).sort((a, b) => a - b);
 
-      // Remove all existing points and add new ones based on visibility
-      ofun.removeAllPoints();
+      // Build opacity points and apply via preset (creates new ofun internally)
+      const allPoints: [number, number][] = [];
       for (const hu of sortedHU) {
         let totalOp = 0;
         for (const layer of TISSUE_LAYERS) {
@@ -235,12 +230,21 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
             totalOp += evalLayer(layer.points, hu);
           }
         }
-        ofun.addPoint(hu, Math.max(0, Math.min(1, totalOp)));
+        allPoints.push([hu, Math.max(0, Math.min(1, totalOp))]);
       }
 
-      // CRITICAL: property.modified() triggers mapper to rebuild opacity texture
-      property.modified();
-      viewport.render();
+      const count = allPoints.length * 2;
+      const opStr = count + ' ' + allPoints.map(([h, o]) => `${h} ${o.toFixed(4)}`).join(' ');
+      viewport.setProperties({
+        preset: {
+          name: `tissue-${Date.now()}`,
+          scalarOpacity: opStr,
+          colorTransfer: '20 -3024 0 0 0 67.0106 0.54902 0.25098 0.14902 251.105 0.882353 0.603922 0.290196 439.291 1 0.937033 0.954531 3071 0.827451 0.658824 1',
+          gradientOpacity: '4 0 1 255 1',
+          specularPower: '10', specular: '0.2', shade: '1',
+          ambient: '0.1', diffuse: '0.9', interpolation: '1',
+        } as any,
+      });
 
       const visibleList = Object.keys(visibility).filter(k => visibility[k]);
       console.log('[TissueVis] Opacity updated, visible:', visibleList.join(', '));
@@ -274,6 +278,18 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
   const [huCropEnabled, setHuCropEnabled] = useState(false);
   const [huCropMin, setHuCropMin] = useState(100);
   const [huCropMax, setHuCropMax] = useState(500);
+
+  // Clipping Box — 6 planes to clip the volume
+  const [clipEnabled, setClipEnabled] = useState(false);
+  const [clipBox, setClipBox] = useState({ xMin: 0, xMax: 100, yMin: 0, yMax: 100, zMin: 0, zMax: 100 }); // percentages
+
+  // Region Growing — flood fill from seed point within HU range
+  const [regionGrowMode, setRegionGrowMode] = useState<'off' | 'picking'>('off');
+  const [regionGrowHuMin, setRegionGrowHuMin] = useState(100);
+  const [regionGrowHuMax, setRegionGrowHuMax] = useState(500);
+  const [regionGrowStatus, setRegionGrowStatus] = useState('');
+  const regionGrowSeedRef = useRef<[number, number, number] | null>(null);
+
   const scalpelCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const scalpelPointsRef = useRef<[number, number][]>([]);
   const volumeBackupRef = useRef<{ data: Float32Array | Int16Array | null; saved: boolean }>({ data: null, saved: false });
@@ -290,13 +306,51 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
     console.log('[Scalpel] Volume backup saved, length:', data.length);
   }, [volumeId]);
 
-  // Undo scalpel: restore original volume data
+  // Sync volume voxelManager data back to per-image cache.
+  // The VTK streaming 3D texture reads from cache.getImage(imageId).voxelManager.getScalarData(),
+  // NOT from the volume's voxelManager. So after modifying voxels in the volume,
+  // we must also update the corresponding cached image data for changes to be visible in 3D.
+  const syncVolumeToCachedImages = useCallback((volume: any, modifiedSlices?: Set<number>) => {
+    const imageIds = volume.imageIds as string[];
+    const vm = volume.voxelManager;
+    const dims = volume.imageData.getDimensions();
+    const cols = dims[0];
+    const rows = dims[1];
+
+    const slicesToSync = modifiedSlices || new Set(Array.from({ length: dims[2] }, (_, i) => i));
+    let synced = 0;
+
+    for (const k of slicesToSync) {
+      if (k < 0 || k >= imageIds.length) continue;
+      try {
+        const cachedImage = cornerstone.cache.getImage(imageIds[k]);
+        if (!cachedImage) continue;
+        // Get the cached image's scalar data array
+        const sliceData = (cachedImage as any).voxelManager?.getScalarData?.()
+                       || (cachedImage as any).getPixelData?.();
+        if (!sliceData) continue;
+        // Copy modified voxels from volume voxelManager to cached image
+        for (let j = 0; j < rows; j++) {
+          for (let i = 0; i < cols; i++) {
+            sliceData[j * cols + i] = vm.getAtIJK(i, j, k);
+          }
+        }
+        synced++;
+      } catch { /* skip inaccessible images */ }
+    }
+    console.log(`[Scalpel] Synced ${synced} slices to image cache`);
+  }, []);
+
+  // Undo scalpel: restore original volume data + sync to cached images
   const undoScalpel = useCallback(() => {
     const backup = volumeBackupRef.current;
     if (!backup.saved || !backup.data) return;
     const volume = cornerstone.cache.getVolume(volumeId) as any;
     if (!volume?.voxelManager) return;
     volume.voxelManager.setCompleteScalarDataArray(backup.data);
+
+    // Sync ALL slices back to per-image cache so 3D texture picks up restored data
+    syncVolumeToCachedImages(volume);
 
     // Force 3D texture update
     const viewport = getViewport3d();
@@ -309,7 +363,7 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
     }
     volumeBackupRef.current = { data: null, saved: false };
     console.log('[Scalpel] Volume restored from backup');
-  }, [volumeId]);
+  }, [volumeId, syncVolumeToCachedImages]);
 
   // Apply scalpel: erase voxels under the drawn region via ray-march
   const applyScalpel = useCallback((canvasPoints: [number, number][]) => {
@@ -366,6 +420,7 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
     const maxDist = camLen * 2.5;
     let erased = 0;
     const AIR_HU = -1024;
+    const modifiedSlices = new Set<number>();
 
     for (let cx = Math.floor(minX); cx <= Math.ceil(maxX); cx += step) {
       for (let cy = Math.floor(minY); cy <= Math.ceil(maxY); cy += step) {
@@ -400,6 +455,7 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
           const hu = vm.getAtIJK(i, j, k);
           if (hu > -200) { // non-air
             vm.setAtIJK(i, j, k, AIR_HU);
+            modifiedSlices.add(k);
             erased++;
           }
         }
@@ -407,15 +463,20 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
     }
 
     if (erased > 0) {
+      // CRITICAL: Sync modified slices to per-image cache so the streaming
+      // 3D texture picks up the changes. Without this, erased voxels are
+      // invisible because the GPU texture reads from cached image data.
+      syncVolumeToCachedImages(volume, modifiedSlices);
+
       imageData.modified();
       // Force mapper to detect data change and rebuild scalar texture
       const actor = viewport.getDefaultActor()?.actor;
       const mapper = actor?.getMapper?.();
       if (mapper) (mapper as any).modified?.();
       viewport.render();
-      console.log(`[Scalpel] Erased ${erased} voxels`);
+      console.log(`[Scalpel] Erased ${erased} voxels across ${modifiedSlices.size} slices`);
     }
-  }, [volumeId, saveVolumeBackup]);
+  }, [volumeId, saveVolumeBackup, syncVolumeToCachedImages]);
 
   // Setup/teardown scalpel canvas overlay on 3D viewport
   useEffect(() => {
@@ -543,55 +604,288 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
       }
     };
 
+    // Escape key exits scalpel mode
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setScalpelMode('off');
+    };
+
     // Listen on DOCUMENT in capture phase — guaranteed to fire before any VTK handler
     document.addEventListener('mousedown', onDown, true);
     document.addEventListener('mousemove', onMove, true);
     document.addEventListener('mouseup', onUp, true);
+    document.addEventListener('keydown', onKeyDown);
 
     return () => {
       document.removeEventListener('mousedown', onDown, true);
       document.removeEventListener('mousemove', onMove, true);
       document.removeEventListener('mouseup', onUp, true);
+      document.removeEventListener('keydown', onKeyDown);
     };
   }, [scalpelMode, applyScalpel]);
 
-  // Apply HU crop — set opacity to 0 outside the range, smooth ramp inside
-  const applyHuCrop = useCallback((enabled: boolean, minHU: number, maxHU: number) => {
+  // Apply HU crop via viewport.setProperties({ preset }) — this calls applyPreset()
+  // which creates a NEW vtkPiecewiseFunction internally, busting the mapper's hash cache.
+  // Apply clipping box — 6 planes to crop the 3D volume
+  const applyClipBox = useCallback((enabled: boolean, box: typeof clipBox) => {
     const viewport = getViewport3d();
     if (!viewport) return;
     try {
       const actor = viewport.getDefaultActor()?.actor;
-      if (!actor) return;
-      const property = (actor as any).getProperty?.();
-      if (!property) return;
-      const ofun = property.getScalarOpacity?.(0);
-      if (!ofun) return;
+      const mapper = actor?.getMapper?.();
+      if (!mapper) return;
 
-      ofun.removeAllPoints();
+      // Remove existing clipping planes
+      mapper.removeAllClippingPlanes();
 
-      if (!enabled) {
-        // Restore default CT-Chest-Contrast-Enhanced opacity
-        ofun.addPoint(-3024, 0);
-        ofun.addPoint(67, 0);
-        ofun.addPoint(251, 0.45);
-        ofun.addPoint(439, 0.625);
-        ofun.addPoint(3071, 0.616);
-      } else {
-        // Sharp crop: only show voxels in [minHU, maxHU]
-        const ramp = 20; // smooth transition width in HU
-        ofun.addPoint(-3024, 0);
-        ofun.addPoint(minHU - ramp, 0);
-        ofun.addPoint(minHU, 0.05);
-        ofun.addPoint(minHU + ramp, 0.4);
-        ofun.addPoint((minHU + maxHU) / 2, 0.6);
-        ofun.addPoint(maxHU - ramp, 0.5);
-        ofun.addPoint(maxHU, 0.05);
-        ofun.addPoint(maxHU + ramp, 0);
-        ofun.addPoint(3071, 0);
+      if (enabled) {
+        const volume = cornerstone.cache.getVolume(volumeId);
+        if (!volume?.imageData) return;
+        const bounds = volume.imageData.getBounds(); // [xmin,xmax,ymin,ymax,zmin,zmax]
+
+        // Convert percentages to world coordinates
+        const toWorld = (pct: number, min: number, max: number) => min + (pct / 100) * (max - min);
+
+        const xLo = toWorld(box.xMin, bounds[0], bounds[1]);
+        const xHi = toWorld(box.xMax, bounds[0], bounds[1]);
+        const yLo = toWorld(box.yMin, bounds[2], bounds[3]);
+        const yHi = toWorld(box.yMax, bounds[2], bounds[3]);
+        const zLo = toWorld(box.zMin, bounds[4], bounds[5]);
+        const zHi = toWorld(box.zMax, bounds[4], bounds[5]);
+
+        // 6 clipping planes forming a box
+        const planes = [
+          { origin: [xLo, 0, 0], normal: [1, 0, 0] },   // +X (keep right of xLo)
+          { origin: [xHi, 0, 0], normal: [-1, 0, 0] },   // -X (keep left of xHi)
+          { origin: [0, yLo, 0], normal: [0, 1, 0] },     // +Y (keep above yLo)
+          { origin: [0, yHi, 0], normal: [0, -1, 0] },    // -Y (keep below yHi)
+          { origin: [0, 0, zLo], normal: [0, 0, 1] },     // +Z (keep above zLo)
+          { origin: [0, 0, zHi], normal: [0, 0, -1] },    // -Z (keep below zHi)
+        ];
+
+        for (const p of planes) {
+          // IMMUTABLE fake vtkPlane: VTK.js internally calls setOrigin()/setNormal()
+          // to transform planes into data coordinates on each render. If we store
+          // those transformed values, the next render double-transforms them, causing
+          // cascading corruption (image disappears on rotation/click).
+          // Fix: getOrigin/getNormal always return fresh copies of the ORIGINAL
+          // world-space values. setOrigin/setNormal are no-ops.
+          const origOrigin = [...p.origin] as [number, number, number];
+          const origNormal = [...p.normal] as [number, number, number];
+          let mtime = Date.now();
+          const plane: any = {
+            isA: (cls: string) => cls === 'vtkPlane',
+            getClassName: () => 'vtkPlane',
+            getOrigin: () => [...origOrigin],
+            getNormal: () => [...origNormal],
+            setOrigin: () => {},  // no-op — preserve original world-space values
+            setNormal: () => {},  // no-op — preserve original world-space values
+            getMTime: () => mtime,
+            modified: () => { mtime = Date.now(); },
+            onModified: () => ({ unsubscribe: () => {} }),
+          };
+          mapper.addClippingPlane(plane);
+        }
       }
 
-      property.modified();
-      viewport.render();
+      mapper.modified();
+      // Use VTK native render to bypass Cornerstone's resetCameraClippingRange
+      try {
+        const renderer = (viewport as any).getRenderer?.();
+        renderer?.getRenderWindow?.()?.render?.();
+      } catch {
+        viewport.render();
+      }
+      console.log(`[ClipBox] ${enabled ? 'ON' : 'OFF'}`);
+    } catch (e) {
+      console.warn('[ClipBox] Error:', e);
+    }
+  }, [volumeId]);
+
+  // ── Region Growing: 3D flood fill from seed within HU range ──
+  // Picks a seed from the 3D viewport click, runs BFS to find all connected
+  // voxels in the HU range, then erases everything else.
+  const applyRegionGrow = useCallback((seedIJK: [number, number, number], minHU: number, maxHU: number) => {
+    const viewport = getViewport3d();
+    if (!viewport) return;
+    const volume = cornerstone.cache.getVolume(volumeId) as any;
+    if (!volume?.voxelManager || !volume?.imageData) return;
+
+    saveVolumeBackup();
+    setRegionGrowStatus('Growing...');
+
+    const imageData = volume.imageData;
+    const vm = volume.voxelManager;
+    const dims = imageData.getDimensions();
+    const [nx, ny, nz] = dims;
+    const totalVoxels = nx * ny * nz;
+
+    // Verify seed is in range
+    const seedHU = vm.getAtIJK(seedIJK[0], seedIJK[1], seedIJK[2]);
+    if (seedHU < minHU || seedHU > maxHU) {
+      setRegionGrowStatus(`Seed HU=${seedHU} outside range [${minHU}, ${maxHU}]`);
+      return;
+    }
+
+    // BFS flood fill — use Uint8Array as visited mask
+    const mask = new Uint8Array(totalVoxels); // 0 = not in region, 1 = in region
+    const toIdx = (i: number, j: number, k: number) => k * nx * ny + j * nx + i;
+
+    const queue: number[] = []; // flat indices
+    const seedIdx = toIdx(seedIJK[0], seedIJK[1], seedIJK[2]);
+    queue.push(seedIdx);
+    mask[seedIdx] = 1;
+    let regionSize = 0;
+    const MAX_REGION = 20_000_000; // safety limit
+
+    // 6-connected neighbors
+    const dx = [1, -1, 0, 0, 0, 0];
+    const dy = [0, 0, 1, -1, 0, 0];
+    const dz = [0, 0, 0, 0, 1, -1];
+
+    let head = 0;
+    while (head < queue.length && regionSize < MAX_REGION) {
+      const idx = queue[head++];
+      regionSize++;
+      const k = Math.floor(idx / (nx * ny));
+      const rem = idx % (nx * ny);
+      const j = Math.floor(rem / nx);
+      const i = rem % nx;
+
+      for (let d = 0; d < 6; d++) {
+        const ni = i + dx[d], nj = j + dy[d], nk = k + dz[d];
+        if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 || nk >= nz) continue;
+        const nIdx = toIdx(ni, nj, nk);
+        if (mask[nIdx]) continue;
+        const hu = vm.getAtIJK(ni, nj, nk);
+        if (hu >= minHU && hu <= maxHU) {
+          mask[nIdx] = 1;
+          queue.push(nIdx);
+        }
+      }
+    }
+
+    console.log(`[RegionGrow] Found ${regionSize} voxels in region`);
+
+    // Erase everything OUTSIDE the region
+    const AIR_HU = -1024;
+    let erased = 0;
+    const modifiedSlices = new Set<number>();
+    for (let k = 0; k < nz; k++) {
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const idx = toIdx(i, j, k);
+          if (!mask[idx] && vm.getAtIJK(i, j, k) > -200) {
+            vm.setAtIJK(i, j, k, AIR_HU);
+            modifiedSlices.add(k);
+            erased++;
+          }
+        }
+      }
+    }
+
+    console.log(`[RegionGrow] Erased ${erased} voxels outside region`);
+
+    // Sync to cached images
+    syncVolumeToCachedImages(volume, modifiedSlices);
+
+    imageData.modified();
+    const actor = viewport.getDefaultActor()?.actor;
+    const mapper = actor?.getMapper?.();
+    if (mapper) (mapper as any).modified?.();
+    viewport.render();
+
+    setRegionGrowStatus(`Isolated ${regionSize.toLocaleString()} voxels (${modifiedSlices.size} slices)`);
+  }, [volumeId, saveVolumeBackup, syncVolumeToCachedImages]);
+
+  // Handle seed picking from 3D viewport click
+  useEffect(() => {
+    if (regionGrowMode !== 'picking') return;
+    const viewport = getViewport3d();
+    if (!viewport?.element) return;
+
+    const el = viewport.element;
+
+    const onClick = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+
+      const worldPoint = (viewport as any).canvasToWorld?.([cx, cy]);
+      if (!worldPoint) { setRegionGrowStatus('Could not map click to world'); return; }
+
+      const volume = cornerstone.cache.getVolume(volumeId) as any;
+      if (!volume?.imageData) return;
+      const ijk = volume.imageData.worldToIndex(worldPoint);
+      const seed: [number, number, number] = [Math.round(ijk[0]), Math.round(ijk[1]), Math.round(ijk[2])];
+      regionGrowSeedRef.current = seed;
+
+      const hu = volume.voxelManager?.getAtIJK(seed[0], seed[1], seed[2]);
+      setRegionGrowStatus(`Seed: [${seed.join(',')}] HU=${hu}`);
+      setRegionGrowMode('off');
+
+      // Auto-run grow
+      setTimeout(() => applyRegionGrow(seed, regionGrowHuMin, regionGrowHuMax), 50);
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setRegionGrowMode('off'); setRegionGrowStatus('Cancelled'); }
+    };
+
+    // Temporarily disable VTK interactor
+    try {
+      const renderer = (viewport as any).getRenderer?.();
+      const interactor = renderer?.getRenderWindow?.()?.getInteractor?.();
+      if (interactor) interactor.setEnabled(false);
+    } catch {}
+
+    el.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      el.removeEventListener('click', onClick, true);
+      document.removeEventListener('keydown', onKeyDown);
+      // Re-enable VTK interactor
+      try {
+        const renderer = (viewport as any).getRenderer?.();
+        const interactor = renderer?.getRenderWindow?.()?.getInteractor?.();
+        if (interactor) interactor.setEnabled(true);
+      } catch {}
+    };
+  }, [regionGrowMode, volumeId, regionGrowHuMin, regionGrowHuMax, applyRegionGrow]);
+
+  const BASE_COLOR = '20 -3024 0 0 0 67.0106 0.54902 0.25098 0.14902 251.105 0.882353 0.603922 0.290196 439.291 1 0.937033 0.954531 3071 0.827451 0.658824 1';
+
+  const applyHuCrop = useCallback((enabled: boolean, minHU: number, maxHU: number) => {
+    const viewport = getViewport3d();
+    if (!viewport) return;
+    try {
+      let opacityStr: string;
+      if (!enabled) {
+        opacityStr = '10 -3024 0 67.0106 0 251.105 0.446429 439.291 0.625 3071 0.616071';
+      } else {
+        const ramp = 20;
+        const pts: [number, number][] = [
+          [-3024, 0], [minHU - ramp, 0], [minHU, 0.05], [minHU + ramp, 0.4],
+          [(minHU + maxHU) / 2, 0.6],
+          [maxHU - ramp, 0.5], [maxHU, 0.05], [maxHU + ramp, 0], [3071, 0],
+        ];
+        const count = pts.length * 2;
+        opacityStr = count + ' ' + pts.map(([h, o]) => `${h} ${o}`).join(' ');
+      }
+
+      viewport.setProperties({
+        preset: {
+          name: `crop-${Date.now()}`,
+          scalarOpacity: opacityStr,
+          colorTransfer: BASE_COLOR,
+          gradientOpacity: '4 0 1 255 1',
+          specularPower: '10', specular: '0.2', shade: '1',
+          ambient: '0.1', diffuse: '0.9', interpolation: '1',
+        } as any,
+      });
+
       console.log(`[HUCrop] ${enabled ? `${minHU}→${maxHU} HU` : 'disabled'}`);
     } catch (e) {
       console.warn('[HUCrop] Error:', e);
@@ -861,14 +1155,16 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', width: 30 }}>Min</span>
               <input type="range" min={-1024} max={2000} value={huCropMin}
-                onChange={(e) => { const v = Number(e.target.value); setHuCropMin(v); applyHuCrop(true, v, huCropMax); }}
+                onChange={(e) => setHuCropMin(Number(e.target.value))}
+                onMouseUp={(e) => applyHuCrop(true, Number((e.target as HTMLInputElement).value), huCropMax)}
                 style={{ flex: 1, height: 3 }} />
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', width: 45, textAlign: 'right' }}>{huCropMin} HU</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', width: 30 }}>Max</span>
               <input type="range" min={-500} max={3071} value={huCropMax}
-                onChange={(e) => { const v = Number(e.target.value); setHuCropMax(v); applyHuCrop(true, huCropMin, v); }}
+                onChange={(e) => setHuCropMax(Number(e.target.value))}
+                onMouseUp={(e) => applyHuCrop(true, huCropMin, Number((e.target as HTMLInputElement).value))}
                 style={{ flex: 1, height: 3 }} />
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', width: 45, textAlign: 'right' }}>{huCropMax} HU</span>
             </div>
@@ -890,6 +1186,93 @@ export function RenderModeSelector({ renderingEngineId, volumeId }: Props) {
         <button className="render-mode-btn" onClick={undoScalpel}
           title="Undo all scalpel edits" style={{ fontSize: '10px', padding: '2px 8px' }}
           disabled={!volumeBackupRef.current.saved}>Undo</button>
+      </div>
+
+      {/* Region Growing — seed-based 3D flood fill to isolate cardiac chambers */}
+      <div style={{ padding: '4px 0', borderTop: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '10px', color: 'var(--text-muted)', flexShrink: 0 }}>Isolate:</span>
+          <button
+            className={`render-mode-btn ${regionGrowMode === 'picking' ? 'active' : ''}`}
+            onClick={() => {
+              if (regionGrowMode === 'picking') { setRegionGrowMode('off'); setRegionGrowStatus(''); }
+              else { setRegionGrowMode('picking'); setRegionGrowStatus('Click on 3D to place seed...'); }
+            }}
+            title="Click on the 3D volume to place a seed point, then region grow within HU range"
+            style={{ fontSize: '10px', padding: '2px 8px', fontWeight: 600, color: regionGrowMode === 'picking' ? '#4fc3f7' : undefined }}
+          >
+            {regionGrowMode === 'picking' ? '[ Click to Seed... ]' : 'Seed'}
+          </button>
+          {/* Quick presets */}
+          <button className="render-mode-btn" onClick={() => { setRegionGrowHuMin(100); setRegionGrowHuMax(500); }}
+            title="Left atrium / ventricle (contrast blood 100-500 HU)" style={{ fontSize: '10px', padding: '2px 6px' }}>LA</button>
+          <button className="render-mode-btn" onClick={() => { setRegionGrowHuMin(150); setRegionGrowHuMax(600); }}
+            title="Aorta / great vessels (150-600 HU)" style={{ fontSize: '10px', padding: '2px 6px' }}>Aorta</button>
+          <button className="render-mode-btn" onClick={() => { setRegionGrowHuMin(500); setRegionGrowHuMax(2000); }}
+            title="Bone only (500-2000 HU)" style={{ fontSize: '10px', padding: '2px 6px' }}>Bone</button>
+          <button className="render-mode-btn" onClick={undoScalpel}
+            title="Undo — restore original volume" style={{ fontSize: '10px', padding: '2px 6px' }}
+            disabled={!volumeBackupRef.current.saved}>Undo</button>
+        </div>
+        {/* HU range sliders */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 3 }}>
+          <span style={{ fontSize: '9px', color: 'var(--text-muted)', width: 24 }}>Min</span>
+          <input type="range" min={-500} max={1500} value={regionGrowHuMin}
+            onChange={(e) => setRegionGrowHuMin(Number(e.target.value))}
+            style={{ flex: 1, height: 2 }} />
+          <span style={{ fontSize: '9px', color: 'var(--text-muted)', width: 45, textAlign: 'right' }}>{regionGrowHuMin}</span>
+          <span style={{ fontSize: '9px', color: 'var(--text-muted)', width: 24 }}>Max</span>
+          <input type="range" min={0} max={3071} value={regionGrowHuMax}
+            onChange={(e) => setRegionGrowHuMax(Number(e.target.value))}
+            style={{ flex: 1, height: 2 }} />
+          <span style={{ fontSize: '9px', color: 'var(--text-muted)', width: 45, textAlign: 'right' }}>{regionGrowHuMax}</span>
+        </div>
+        {regionGrowStatus && (
+          <div style={{ fontSize: '10px', color: regionGrowStatus.includes('Isolated') ? '#4caf50' : 'var(--text-muted)', marginTop: 2, padding: '2px 4px' }}>
+            {regionGrowStatus}
+          </div>
+        )}
+      </div>
+
+      {/* Clipping Box */}
+      <div style={{ padding: '4px 0', borderTop: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: clipEnabled ? 4 : 0 }}>
+          <span style={{ fontSize: '10px', color: 'var(--text-muted)', flexShrink: 0 }}>Clip:</span>
+          <button
+            className={`render-mode-btn ${clipEnabled ? 'active' : ''}`}
+            onClick={() => { const next = !clipEnabled; setClipEnabled(next); applyClipBox(next, clipBox); }}
+            style={{ fontSize: '10px', padding: '2px 8px', fontWeight: 600 }}
+          >
+            {clipEnabled ? 'ON' : 'OFF'}
+          </button>
+          <button className="render-mode-btn" onClick={() => {
+            const b = { xMin: 15, xMax: 85, yMin: 5, yMax: 70, zMin: 25, zMax: 90 };
+            setClipBox(b); setClipEnabled(true); applyClipBox(true, b);
+          }} style={{ fontSize: '10px', padding: '2px 6px' }} title="Crop to center — remove chest wall">Center</button>
+          <button className="render-mode-btn" onClick={() => {
+            // LPS: Y+ = posterior (heart is anterior = low Y%), Z+ = superior (heart is upper chest = high Z%)
+            const b = { xMin: 25, xMax: 80, yMin: 0, yMax: 55, zMin: 50, zMax: 90 };
+            setClipBox(b); setClipEnabled(true); applyClipBox(true, b);
+          }} style={{ fontSize: '10px', padding: '2px 6px' }} title="Isolate heart region (anterior, upper chest)">Heart</button>
+          <button className="render-mode-btn" onClick={() => {
+            const b = { xMin: 0, xMax: 100, yMin: 0, yMax: 100, zMin: 0, zMax: 100 };
+            setClipBox(b); setClipEnabled(false); applyClipBox(false, b);
+          }} style={{ fontSize: '10px', padding: '2px 6px' }}>Reset</button>
+        </div>
+        {clipEnabled && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {(['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'] as const).map(key => (
+              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontSize: '9px', color: 'var(--text-muted)', width: 28, textAlign: 'right' }}>{key}</span>
+                <input type="range" min={0} max={100} value={clipBox[key]}
+                  onChange={(e) => setClipBox(prev => ({ ...prev, [key]: Number(e.target.value) }))}
+                  onMouseUp={() => applyClipBox(true, clipBox)}
+                  style={{ flex: 1, height: 2 }} />
+                <span style={{ fontSize: '9px', color: 'var(--text-muted)', width: 24 }}>{clipBox[key]}%</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* C-arm angle display + quick angle views */}
